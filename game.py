@@ -1,0 +1,95 @@
+from rules import * 
+EMPTY='.'
+
+class KungFuChessGame:
+    def __init__(self, initial_board,movement_rules=None):
+        self.board = initial_board
+        self.clock=0
+        self.selected_piece_coords = None
+        self.rows=len(self.board)
+        self.cols=len(self.board[0])
+        self.movement_rules = movement_rules or DEFAULT_MOVEMENT_RULES
+
+    def get_piece_at(self, row, col):
+        return self.board[row][col]
+    def set_piece_at(self, row, col,val):
+        self.board[row][col]=val
+
+    def is_cell_empty(self, row, col):
+        return self.get_piece_at(row, col) == EMPTY
+
+    def get_piece_color(self, piece):
+        return piece[0] if piece != "." else None
+
+    def get_piece_type(self, piece):
+        return piece[1] if piece != "." else None
+
+    def transfer_pixels_to_data(self,pixels):
+        return pixels//100
+
+    def is_within_board_boundries(self,coordinates):
+        row,col=coordinates
+        return 0 <= row < self.rows and 0 <= col < self.cols
+
+    def is_path_clear(self, origin, target):
+        from_row, from_col = origin
+        to_row, to_col = target
+        
+        row_step = 0 if to_row == from_row else (1 if to_row > from_row else -1)
+        col_step = 0 if to_col == from_col else (1 if to_col > from_col else -1)
+        
+        curr_row = from_row + row_step
+        curr_col = from_col + col_step
+        
+        while curr_row != to_row or curr_col != to_col:
+            if not self.is_cell_empty(curr_row, curr_col):
+                return False
+            curr_row += row_step
+            curr_col += col_step
+            
+        return True
+    
+    def move(self, to_move, origin, target):
+        if origin == target:
+            return False
+            
+        color = self.get_piece_color(to_move)
+        piece_type = self.get_piece_type(to_move)
+        
+        if piece_type in self.movement_rules:
+            return self.movement_rules[piece_type](origin, target, color, self)
+            
+        return False
+    
+
+    def handle_click(self, x, y):
+        col = self.transfer_pixels_to_data(x)
+        row = self.transfer_pixels_to_data(y)
+
+        if not self.is_within_board_boundries((row,col)):
+            return 
+        clicked_piece = self.get_piece_at(row,col)
+    
+        if not self.selected_piece_coords:
+            if self.is_cell_empty(row,col):
+                self.selected_piece_coords = (row, col)
+            return
+        
+        sel_row, sel_col = self.selected_piece_coords
+        selected_piece = self.get_piece_at(sel_row,sel_col)
+
+        if self.get_piece_color(clicked_piece) == self.get_piece_color(selected_piece):
+            self.selected_piece_coords = (row, col)
+        elif self.move(selected_piece,(sel_row,sel_col),(row,col)):
+            self.set_piece_at(row, col,selected_piece)
+            self.set_piece_at(sel_row, sel_col,EMPTY)
+            self.selected_piece_coords = None
+            
+            
+    def handle_wait(self, ms):
+        self.clock+=ms
+
+    def print_board(self):
+        for row in self.board:
+            print(" ".join(row))
+    
