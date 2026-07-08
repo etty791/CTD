@@ -8,6 +8,7 @@ class KungFuChessGame:
         self.selected_piece_coords = None
         self.movement_rules = movement_rules or DEFAULT_MOVEMENT_RULES
         self.pending_moves = []
+        self.game_active = True
 
     def get_piece_color(self, piece):
         return piece[0] if piece != EMPTY_CELL else None
@@ -96,6 +97,8 @@ class KungFuChessGame:
     
 
     def handle_click(self, x, y):
+        if not self.game_active:
+            return
         col = self.transfer_pixels_to_data(x)
         row = self.transfer_pixels_to_data(y)
 
@@ -163,5 +166,9 @@ class KungFuChessGame:
                     continue
             
             self.board.set_piece_at(move['origin'], EMPTY_CELL)
+            if self.board.get_piece_at(move['target']) == KING:
+                self.finish_game(self.get_piece_color(move['piece']))
             self.board.set_piece_at(move['target'], move['piece'])
             self.pending_moves.remove(move)
+    def finish_game(self, winner_color):
+        self.game_active = False

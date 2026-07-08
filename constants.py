@@ -11,3 +11,4 @@ VALID_TOKENS = frozenset({
 COLOR_WHITE = 'w'
 COLOR_BLACK = 'b'
 NON_JUMPERS  = {'R', 'B', 'Q', 'P'}
+KING = 'K'
