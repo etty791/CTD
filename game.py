@@ -36,6 +36,28 @@ class KungFuChessGame:
             
         return True
     
+    def try_move(self, to_move, origin, target):
+        from_row, from_col = origin
+        to_row, to_col = target
+        
+        row_step = 0 if to_row == from_row else (1 if to_row > from_row else -1)
+        col_step = 0 if to_col == from_col else (1 if to_col > from_col else -1)
+        
+        curr_row = from_row 
+        curr_col = from_col
+
+        while curr_row != to_row or curr_col != to_col:
+            self.board.set_piece_at((curr_row, curr_col), EMPTY_CELL)
+            self.handle_wait(DEFAULT_MOVE_DELAY_MS)
+            curr_row += row_step
+            curr_col += col_step
+            if not self.board.is_cell_empty((curr_row, curr_col)):
+                self.board.set_piece_at((from_row, from_col), to_move)
+                return False
+            self.board.set_piece_at((curr_row, curr_col), to_move)
+             
+        return True
+
     def move(self, to_move, origin, target):
         if origin == target:
             return False
@@ -44,7 +66,8 @@ class KungFuChessGame:
         piece_type = self.get_piece_type(to_move)
         
         if piece_type in self.movement_rules:
-            return self.movement_rules[piece_type](origin, target, color, self)
+            if self.movement_rules[piece_type](origin, target, color, self):
+                return self.try_move(to_move, origin, target)
             
         return False
     
