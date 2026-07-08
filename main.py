@@ -8,7 +8,7 @@ from game import KungFuChessGame
 
 def main():
     board, commands = parse_input(VALID_TOKENS)
-    game = KungFuChessGame(board)
+    game = KungFuChessGame(Board(board))
     
     for cmd in commands:
         parts = cmd.split()

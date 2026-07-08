@@ -25,7 +25,7 @@ def is_valid_board(board,valid):
                 
     return True
 
-def parse_input():
+def parse_input(valid):
     lines = sys.stdin.read().splitlines()
 
     parsing_board = False
@@ -53,7 +53,7 @@ def parse_input():
         elif parsing_commands:
             commands.append(clean_line)
     
-    if not is_valid_board(board):
+    if not is_valid_board(board,valid):
         exit(1)
         
     if not commands:
