@@ -1,3 +1,4 @@
+from constants import * 
 def compute_diff(origin,target):
     from_row, from_col = origin
     to_row, to_col = target
@@ -23,7 +24,7 @@ def validate_bishop_move(origin, target, color, game):
     return False
 
 def validate_queen_move(origin, target, color, game):
-    if validate_bishop_move(origin,target,color,game) and validate_rook_move(origin, target, color, game):
+    if validate_bishop_move(origin,target,color,game) or validate_rook_move(origin, target, color, game):
         return game.is_path_clear(origin, target)
     return False
 
@@ -36,7 +37,7 @@ def validate_pawn_move(origin, target, color, game):
     to_row, to_col = target
     col_diff = abs(to_col - from_col)
     
-    valid_direction = (color == 'w' and from_row == to_row + 1) or (color == 'b' and from_row == to_row - 1)
+    valid_direction = (color == COLOR_WHITE and from_row == to_row + 1) or (color == COLOR_BLACK and from_row == to_row - 1)
     
     if valid_direction:
         if col_diff == 0:
