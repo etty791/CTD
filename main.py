@@ -5,6 +5,7 @@ VALID_TOKENS = {
 }
 from parse_clean import parse_input 
 from game import KungFuChessGame 
+from board import Board
 
 def main():
     board, commands = parse_input(VALID_TOKENS)
@@ -23,7 +24,7 @@ def main():
             game.handle_wait(ms)
         elif action == "print":
             if parts[1] == "board":
-                game.print_board()
+                game.board.print_board()
         else:
             print("ERROR UNKNOWN_TOKEN")
 

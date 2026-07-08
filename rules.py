@@ -41,11 +41,11 @@ def validate_pawn_move(origin, target, color, game):
     
     if valid_direction:
         if col_diff == 0:
-            return game.is_cell_empty(to_row, to_col)
+            return game.board.is_cell_empty((to_row, to_col))
         
         elif col_diff == 1:
-            target_piece = game.get_piece_at(to_row, to_col)
-            if game.is_cell_empty(to_row, to_col):
+            target_piece = game.board.get_piece_at((to_row, to_col))
+            if game.board.is_cell_empty((to_row, to_col)):
                 target_color = game.get_piece_color(target_piece)
                 return target_color != color
     return False
