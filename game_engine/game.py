@@ -9,8 +9,8 @@ class KungFuChessGame:
         self.game_active = True   
 
     def move_request(self, origin, target):
-        if origin == target:
-            return False
+        # if origin == target:
+        #     return False
         if not self.game_active:
             return MoveValidation(False, reason="game_over")
         is_valid_move = validate_move(self.board, origin, target) 
@@ -19,7 +19,16 @@ class KungFuChessGame:
                 return MoveValidation(False, reason="invalid_move")
             return MoveValidation(True, "ok")
         return MoveValidation(False, is_valid_move.reason)
-    
+    def jump_request(self, pos):
+        if not self.game_active:
+            return MoveValidation(False, reason="game_over")
+        
+        if self.board.is_cell_empty(pos):
+            return MoveValidation(False, reason="empty_source")
+        piece = self.board.get_piece_at(pos)
+        if not self.rta.add_jump(piece, pos):
+            return MoveValidation(False, reason="invalid_jump")
+        return MoveValidation(True, "ok")
 
     def finish_game(self):
         self.game_active = False

@@ -68,8 +68,8 @@ def create_piece_from_string(token, x, y, piece_id_counter):
     if token == EMPTY_CELL:
         return EMPTY_CELL
     color = token[0]
-    kind = token[1]
-    return Piece(id_num=piece_id_counter, color=color, kind=kind, position=Position(x, y))
+    type = token[1]
+    return Piece(id_num=piece_id_counter, color=color, type=type, position=Position(x, y))
 
 def create_board(board_lines, valid_tokens):
     if not is_valid_board(board_lines, valid_tokens):
@@ -91,7 +91,7 @@ def create_commands(command_lines):
     for cmd in command_lines:
         parts = cmd.split()
         action = parts[0]
-        if action not in ["click", "wait", "print"]:
+        if action not in ["click", "wait", "print","jump"]:
             print("ERROR UNKNOWN_TOKEN")
             exit(1)
         
@@ -99,6 +99,10 @@ def create_commands(command_lines):
             x = int(parts[1])
             y = int(parts[2])
             commands.append(("click", x, y))
+        elif action == "jump":
+            x = int(parts[1])
+            y = int(parts[2])
+            commands.append(("jump", x, y))
         elif action == "wait":
             ms = int(parts[1])
             commands.append(("wait", ms))
