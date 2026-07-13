@@ -1,4 +1,4 @@
-from model.piece import Piece, Color, PieceType
+from model.piece import Piece, Color, PieceType, State
 from model.position import Position
 EMPTY_CELL= '.'
 
@@ -25,7 +25,7 @@ class Board:
     def move_piece(self, from_pos, to_pos):
         piece = self.get_piece_at(from_pos)
         if self.get_piece_at(to_pos) != EMPTY_CELL:
-            self.get_piece_at(to_pos).state = "captured" 
+            self.get_piece_at(to_pos).state = State.captured
         self.set_piece_at(to_pos, piece)
         self.set_piece_at(from_pos, EMPTY_CELL)
         piece.position = to_pos
@@ -41,5 +41,5 @@ class Board:
 
     def _apply_promotion(self, piece: Piece) -> None:
         last_row = 0 if piece.color == Color.WHITE else self.rows - 1
-        if piece.kind == PieceType.PAWN and piece.position.x == last_row:
-            piece.kind = PieceType.QUEEN
+        if piece.type == PieceType.PAWN and piece.position.x == last_row:
+            piece.type = PieceType.QUEEN

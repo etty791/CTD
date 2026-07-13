@@ -4,6 +4,7 @@ class State(Enum):
     idle = "idle"
     moving = "moving"
     captured = "captured"
+    airborne = "airborne"
 class PieceType(Enum):
     PAWN = "P"
     KNIGHT = "N"
@@ -15,11 +16,11 @@ class Color(Enum):
     WHITE = "w"
     BLACK = "b"
 class Piece:
-    def __init__(self, id_num, color, kind, position):
+    def __init__(self, id_num, color, type, position):
         self.id = id_num
         self.color = Color(color)
-        self.kind = PieceType(kind)
+        self.type = PieceType(type)
         self.position = position
         self.state = State.idle
     def __str__(self):
-        return f"{self.color.value}{self.kind.value}"
+        return f"{self.color.value}{self.type.value}"
