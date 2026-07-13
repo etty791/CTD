@@ -1,14 +1,14 @@
-from model.position import position
+import pytest
+from model.position import Position
 
-
-def test_equal_positions():
-    assert position(2, 3) == position(2, 3)
-
-def test_different_row():
-    assert position(1, 3) != position(2, 3)
-
-def test_different_col():
-    assert position(2, 1) != position(2, 3)
 
 def test_str():
-    assert str(position(2, 3)) == "(2, 3)"
+    assert str(Position(1, 2)) == "(1, 2)"
+
+def test_eq():
+    assert Position(3, 4) == Position(3, 4)
+    assert Position(1, 2) != Position(2, 1)
+
+def test_add():
+    result = Position(1, 2) + Position(3, 4)
+    assert result == Position(4, 6)
