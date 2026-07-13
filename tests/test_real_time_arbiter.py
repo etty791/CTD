@@ -12,11 +12,11 @@ def empty_board(rows=8, cols=8):
     return Board([[EMPTY] * cols for _ in range(rows)])
 
 
-KIND_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
+type_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
 
-def place(board, color, kind, x, y):
+def place(board, color, type, x, y):
     c = color[0].lower()
-    k = KIND_MAP[kind]
+    k = type_MAP[type]
     p = Piece(f"{c}{k}", c, k, Position(x, y))
     board.set_piece_at(Position(x, y), p)
     return p
@@ -46,9 +46,11 @@ class TestAddMove:
         b = empty_board()
         bishop = place(b, "WHITE", "BISHOP", 0, 0)
         arb = RealTimeArbiter(b)
-        arb.add_move(bishop, pos(0, 0), pos(3, 5))
+        
+        # Corrected to a valid diagonal target: (5, 5)
+        arb.add_move(bishop, pos(0, 0), pos(5, 5)) 
         assert arb.pending_moves[0].arrival_time == 5 * DEFAULT_MOVE_DELAY_MS
-
+        
     def test_duplicate_origin_rejected(self):
         b = empty_board()
         rook = place(b, "WHITE", "ROOK", 0, 0)
@@ -127,6 +129,80 @@ class TestAdvanceTime:
         arb.advance_time(DEFAULT_MOVE_DELAY_MS)
         arb.advance_time(DEFAULT_MOVE_DELAY_MS)
         assert b.get_piece_at(pos(0, 3)) == rook
+
+
+class TestJump:
+    def test_jump_last_1000_ms_and_completes_at_arrival(self):
+        b = empty_board()
+        knight = place(b, "WHITE", "KNIGHT", 2, 2)
+        arb = RealTimeArbiter(b)
+
+        assert arb.add_jump(knight, pos(2, 2)) is True
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS - 1)
+        assert knight.state == State.airborne
+        assert b.get_piece_at(pos(2, 2)) == knight
+
+        arb.advance_time(1)
+        assert knight.state == State.idle
+        assert b.get_piece_at(pos(2, 2)) == knight
+        assert len(arb.pending_moves) == 0
+
+    def test_jump_keeps_piece_on_same_logical_cell(self):
+        b = empty_board()
+        knight = place(b, "WHITE", "KNIGHT", 3, 3)
+        arb = RealTimeArbiter(b)
+
+        arb.add_jump(knight, pos(3, 3))
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)
+
+        assert b.get_piece_at(pos(3, 3)) == knight
+        assert knight.position == pos(3, 3)
+        assert knight.state == State.idle
+
+    def test_airborne_piece_captures_enemy_moving_piece_during_jump_window(self):
+        b = empty_board()
+        airborne = place(b, "WHITE", "KNIGHT", 2, 2)
+        enemy = place(b, "BLACK", "ROOK", 2, 3)
+        arb = RealTimeArbiter(b)
+
+        arb.add_jump(airborne, pos(2, 2))
+        arb.add_move(enemy, pos(2, 3), pos(2, 2))
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)
+
+        assert b.get_piece_at(pos(2, 2)) == airborne
+        assert b.get_piece_at(pos(2, 3)) == EMPTY
+        assert airborne.state == State.idle
+        assert enemy.state == State.captured
+
+    def test_jump_lands_normally_when_no_enemy_arrives(self):
+        b = empty_board()
+        knight = place(b, "WHITE", "KNIGHT", 4, 4)
+        arb = RealTimeArbiter(b)
+
+        arb.add_jump(knight, pos(4, 4))
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)
+
+        assert knight.state == State.idle
+        assert b.get_piece_at(pos(4, 4)) == knight
+
+    def test_moving_piece_cannot_jump(self):
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        arb = RealTimeArbiter(b)
+
+        assert arb.add_move(rook, pos(0, 0), pos(0, 2)) is True
+        assert arb.add_jump(rook, pos(0, 0)) is False
+        assert len(arb.pending_moves) == 1
+        assert rook.state == State.moving
+
+    def test_captured_piece_cannot_jump(self):
+        b = empty_board()
+        knight = place(b, "WHITE", "KNIGHT", 1, 1)
+        arb = RealTimeArbiter(b)
+
+        knight.state = State.captured
+        assert arb.add_jump(knight, pos(1, 1)) is False
+        assert len(arb.pending_moves) == 0
 
 
 class TestCollision:

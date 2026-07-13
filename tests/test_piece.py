@@ -11,8 +11,8 @@ def pawn():
 def test_piece_color(pawn):
     assert pawn.color == Color.WHITE
 
-def test_piece_kind(pawn):
-    assert pawn.kind == PieceType.PAWN
+def test_piece_type(pawn):
+    assert pawn.type == PieceType.PAWN
 
 def test_piece_initial_state(pawn):
     assert pawn.state == State.idle

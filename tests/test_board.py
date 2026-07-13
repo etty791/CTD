@@ -1,6 +1,6 @@
 import pytest
 from model.board import Board
-from model.piece import Piece, Color, PieceType
+from model.piece import Piece, Color, PieceType, State
 from model.position import Position
 
 EMPTY = '.'
@@ -8,11 +8,11 @@ EMPTY = '.'
 def make_empty_board(rows=8, cols=8):
     return Board([[EMPTY] * cols for _ in range(rows)])
 
-KIND_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
+type_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
 
-def make_piece(color="WHITE", kind="PAWN", x=0, y=0):
+def make_piece(color="WHITE", type="PAWN", x=0, y=0):
     c = color[0].lower()
-    k = KIND_MAP[kind]
+    k = type_MAP[type]
     return Piece(f"{c}{k}", c, k, Position(x, y))
 
 
@@ -55,7 +55,7 @@ def test_move_piece_captures_enemy():
     board.set_piece_at(Position(0, 0), attacker)
     board.set_piece_at(Position(0, 5), defender)
     board.move_piece(Position(0, 0), Position(0, 5))
-    assert defender.state == "captured"
+    assert defender.state == State.captured
     assert board.get_piece_at(Position(0, 5)) is attacker
 
 def test_is_friendly():

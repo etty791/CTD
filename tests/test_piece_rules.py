@@ -11,11 +11,11 @@ def empty_board(rows=8, cols=8):
     return Board([[EMPTY] * cols for _ in range(rows)])
 
 
-KIND_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
+type_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
 
-def place(board, color, kind, x, y):
+def place(board, color, type, x, y):
     c = color[0].lower()
-    k = KIND_MAP[kind]
+    k = type_MAP[type]
     p = Piece(f"{c}{k}", c, k, Position(x, y))
     board.set_piece_at(Position(x, y), p)
     return p

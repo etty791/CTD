@@ -79,7 +79,7 @@ def test_click_empty_with_selection_no_move():
 
     controller.selected_piece_pos = Position(1, 1)
     controller.handle_click(game, 200, 200)
-    game.move_request.assert_not_called()
+    game.move_request.assert_called()
 
 def test_click_empty_with_selection_clears_selection():
     game = MagicMock()

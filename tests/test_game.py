@@ -13,17 +13,17 @@ def empty_board(rows=8, cols=8):
     return [[EMPTY] * cols for _ in range(rows)]
 
 
-KIND_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
+type_MAP = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B", "ROOK": "R", "QUEEN": "Q", "KING": "K"}
 
-def make_piece(color, kind, x, y):
+def make_piece(color, type, x, y):
     c = color[0].lower()
-    k = KIND_MAP[kind]
+    k = type_MAP[type]
     return Piece(f"{c}{k}", c, k, Position(x, y))
 
 
-def make_game_with_piece(color="WHITE", kind="ROOK", x=0, y=0):
+def make_game_with_piece(color="WHITE", type="ROOK", x=0, y=0):
     grid = empty_board()
-    piece = make_piece(color, kind, x, y)
+    piece = make_piece(color, type, x, y)
     grid[x][y] = piece
     return KungFuChessGame(grid), piece
 

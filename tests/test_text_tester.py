@@ -39,11 +39,11 @@ class TestCreatePieceFromString:
 
     def test_white_king(self):
         p = create_piece_from_string('wK', 0, 0, 1)
-        assert p.color == Color.WHITE and p.kind == PieceType.KING
+        assert p.color == Color.WHITE and p.type == PieceType.KING
 
     def test_black_pawn(self):
         p = create_piece_from_string('bP', 1, 2, 5)
-        assert p.color == Color.BLACK and p.kind == PieceType.PAWN
+        assert p.color == Color.BLACK and p.type == PieceType.PAWN
         assert p.position.x == 1 and p.position.y == 2
 
     def test_id_assigned(self):
@@ -54,7 +54,7 @@ class TestCreatePieceFromString:
         for ch, pt in [('Q', PieceType.QUEEN), ('R', PieceType.ROOK),
                        ('B', PieceType.BISHOP), ('N', PieceType.KNIGHT)]:
             p = create_piece_from_string(f'w{ch}', 0, 0, 1)
-            assert p.kind == pt
+            assert p.type == pt
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -112,9 +112,9 @@ class TestCreateBoard:
     def test_mixed_row(self):
         lines = make_board_lines(['wK . bK'])
         board = create_board(lines, VALID_TOKENS)
-        assert board[0][0].kind == PieceType.KING
+        assert board[0][0].type == PieceType.KING
         assert board[0][1] == EMPTY_CELL
-        assert board[0][2].kind == PieceType.KING
+        assert board[0][2].type == PieceType.KING
 
     def test_invalid_board_exits(self):
         lines = make_board_lines(['XX .'])
