@@ -106,7 +106,7 @@ class PawnRules(PieceRules):
     
 
     def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
-        START_ROW = {Color.WHITE: board.rows - 1, Color.BLACK: 0}
+        START_ROW = {Color.WHITE: board.rows - 2, Color.BLACK: 1}
         destinations: Set[Position] = set()
         forward = -1 if piece.color == Color.WHITE else 1
 

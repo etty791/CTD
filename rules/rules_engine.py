@@ -36,15 +36,15 @@ def validate_move(
     ) -> MoveValidation:
         # if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
         #     return MoveValidation(False, "outside_board")
-
+        
         piece = board.get_piece_at(source)
-        # if piece is None:
-        #     return MoveValidation(False, "empty_source")
+        if piece is None:
+            return MoveValidation(False, "empty_source")
 
         # if board.is_friendly(destination, piece.color):
         #     return MoveValidation(False, "friendly_destination")
 
-        rules = _rules[piece.kind]
+        rules = _rules[piece.type]
         if destination not in rules.legal_destinations(board, piece):
             return MoveValidation(False, "illegal_piece_move")
 
