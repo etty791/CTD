@@ -1,5 +1,5 @@
 from model.board import Board
-from model.game_snapshot import GameSnapshot
+from game_engine.snapshot import GameSnapshot
 from rules.rules_engine import MoveValidation, validate_move
 from real_time.real_time_arbiter import RealTimeArbiter
 
@@ -42,4 +42,4 @@ class KungFuChessGame:
             self.finish_game()
 
     def get_snapshot(self) -> GameSnapshot:
-        return GameSnapshot(self.board)
+        return GameSnapshot(self.board, self.rta)

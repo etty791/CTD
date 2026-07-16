@@ -1,36 +1,15 @@
-from dataclasses import dataclass, asdict
-from typing import List
+from dataclasses import dataclass
 from model.position import Position
-from model.piece import State,PieceType, Color
+from model.piece import State, PieceType, Color
 
-# 1. הגדרת ה-DTO המייצג כלי בודד
+# DTO מייצג כלי בודד, כפי שהוא נראה כלפי חוץ (view/input)
 @dataclass
 class PieceDTO:
+    id: int
     position: Position
-    type: PieceType    # או סוג ה-Enum המתאים (למשל PieceType)
-    color: Color    # או סוג ה-Enum המתאים (למשל Color)
+    type: PieceType
+    color: Color
     state: State
-
-class GameSnapshot:
-    def __init__(self, board):
-        self._board = board
-        # self.turn = turn
-        # self.move_history = move_history
-
-    def get_all_pieces(self) -> List[PieceDTO]:
-        pieces = []
-        for row in range(self._board.rows):
-            for col in range(self._board.cols):
-                pos = Position(row, col)
-                if not self._board.is_cell_empty(pos):
-                    piece = self._board.get_piece_at(pos)
-                    if piece.state != State.captured:
-                        piece_dto = PieceDTO(
-                            position=pos,
-                            type=piece.type,
-                            color=piece.color,
-                            state=piece.state
-                        )
-                        pieces.append(piece_dto)
-                        
-        return pieces
+    origin: Position    # move/jump start cell; equals position when idle
+    target: Position    # move/jump destination cell; equals position when idle
+    progress: float     # 0.0-1.0 fraction through the current move/jump; 0.0 when idle
