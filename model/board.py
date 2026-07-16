@@ -3,6 +3,36 @@ from model.position import Position
 EMPTY_CELL= '.'
 
 class Board:
+    @classmethod
+    def generate_standard_grid(cls):
+        grid = [[EMPTY_CELL for _ in range(8)] for _ in range(8)]
+        piece_id = 1
+
+        def place_piece(row, col, color, p_type):
+            nonlocal piece_id
+            grid[row][col] = Piece(
+                id_num=piece_id, 
+                color=color.value, 
+                type=p_type.value, 
+                position=Position(row, col)
+            )
+            piece_id += 1
+
+        back_rank = [
+            PieceType.ROOK, PieceType.KNIGHT, PieceType.BISHOP, PieceType.QUEEN,
+            PieceType.KING, PieceType.BISHOP, PieceType.KNIGHT, PieceType.ROOK
+        ]
+
+        for col in range(8):
+            place_piece(0, col, Color.BLACK, back_rank[col])
+            place_piece(1, col, Color.BLACK, PieceType.PAWN)
+
+        for col in range(8):
+            place_piece(6, col, Color.WHITE, PieceType.PAWN)
+            place_piece(7, col, Color.WHITE, back_rank[col])
+
+        return grid
+    
     def __init__(self, initial_grid):
         self._grid = initial_grid
         self.rows = len(initial_grid)
@@ -43,3 +73,5 @@ class Board:
         last_row = 0 if piece.color == Color.WHITE else self.rows - 1
         if piece.type == PieceType.PAWN and piece.position.x == last_row:
             piece.type = PieceType.QUEEN
+
+    

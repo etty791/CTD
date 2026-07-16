@@ -1,9 +1,12 @@
 from model.board import Board
+from model.game_snapshot import GameSnapshot
 from rules.rules_engine import MoveValidation, validate_move
 from real_time.real_time_arbiter import RealTimeArbiter
 
 class KungFuChessGame:
-    def __init__(self, initial_board):
+    def __init__(self, initial_board=None):
+        if initial_board is None:
+            initial_board = Board.generate_standard_grid()
         self.board = Board(initial_board)
         self.rta=RealTimeArbiter(self.board)
         self.game_active = True   
