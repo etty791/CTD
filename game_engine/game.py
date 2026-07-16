@@ -40,3 +40,6 @@ class KungFuChessGame:
         king_captured = self.rta.advance_time(ms)
         if king_captured:
             self.finish_game()
+
+    def get_snapshot(self) -> GameSnapshot:
+        return GameSnapshot(self.board)
