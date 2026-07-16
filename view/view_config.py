@@ -7,6 +7,8 @@ STATE_ASSET_FOLDER = {
     State.idle: "idle",
     State.moving: "move",
     State.airborne: "jump",
+    State.long_rest: "long_rest",
+    State.short_rest: "short_rest",
 }
 MS_PER_SECOND = 1000
 FRAME_DELAY_MS = 33
