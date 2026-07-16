@@ -1,9 +1,7 @@
 import cv2
 import time
 
-MS_PER_SECOND = 1000
-WAIT_TICK_INTERVAL_SECONDS = 1.0
-FRAME_DELAY_MS = 33
+from view.view_config import *
 
 class GameLoop:
     def __init__(self, game, asset_manager, renderer, controller):
@@ -32,9 +30,9 @@ class GameLoop:
     def run(self):
         while self.running:
             current_time = time.time()
+            elapsed_ms = int((current_time - self.last_wait_time) * MS_PER_SECOND)
 
-            if current_time - self.last_wait_time >= WAIT_TICK_INTERVAL_SECONDS:
-                elapsed_ms = int((current_time - self.last_wait_time) * MS_PER_SECOND)
+            if elapsed_ms > 0:
                 self.controller.handle_wait(elapsed_ms)
                 self.last_wait_time = current_time
 
