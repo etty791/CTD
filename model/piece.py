@@ -5,6 +5,11 @@ class State(Enum):
     moving = "moving"
     captured = "captured"
     airborne = "airborne"
+    long_rest = "long_rest"
+    short_rest = "short_rest"
+
+    def is_resting(self) -> bool:
+        return self in (State.long_rest, State.short_rest)
 class PieceType(Enum):
     PAWN = "P"
     KNIGHT = "N"

@@ -3,6 +3,7 @@ from game_engine.snapshot import GameSnapshot
 from rules.rules_engine import MoveValidation, validate_move
 from real_time.real_time_arbiter import RealTimeArbiter
 
+
 class KungFuChessGame:
     def __init__(self, initial_board=None):
         if initial_board is None:
@@ -16,9 +17,12 @@ class KungFuChessGame:
         #     return False
         if not self.game_active:
             return MoveValidation(False, reason="game_over")
-        is_valid_move = validate_move(self.board, origin, target) 
+        is_valid_move = validate_move(self.board, origin, target)
         if is_valid_move.is_valid:
-            if not self.rta.add_move(self.board.get_piece_at(origin), origin, target):
+            piece = self.board.get_piece_at(origin)
+            if piece.state.is_resting():
+                return MoveValidation(False, reason="piece_resting")
+            if not self.rta.add_move(piece, origin, target):
                 return MoveValidation(False, reason="invalid_move")
             return MoveValidation(True, "ok")
         return MoveValidation(False, is_valid_move.reason)
@@ -29,6 +33,8 @@ class KungFuChessGame:
         if self.board.is_cell_empty(pos):
             return MoveValidation(False, reason="empty_source")
         piece = self.board.get_piece_at(pos)
+        if piece.state.is_resting():
+            return MoveValidation(False, reason=PIECE_RESTING_REASON)
         if not self.rta.add_jump(piece, pos):
             return MoveValidation(False, reason="invalid_jump")
         return MoveValidation(True, "ok")

@@ -1,8 +1,15 @@
+from dataclasses import dataclass
+
 from model.board import EMPTY_CELL
-DEFAULT_MOVE_DELAY_MS=1000
-from model.piece import PieceType, State
+from model.piece import Piece, PieceType, State
 from rules.rules_engine import validate_move
 from model.position import Position
+from real_time.real_time_config import *
+
+REST_DURATION_MS = {
+    State.long_rest: LONG_REST_DURATION_MS,
+    State.short_rest: SHORT_REST_DURATION_MS,
+}
 
 class Move:
     def __init__(self, piece, origin, target, arrival_time, start_time):
@@ -11,6 +18,11 @@ class Move:
         self.target = target
         self.arrival_time = arrival_time
         self.start_time = start_time
+
+@dataclass
+class RestingPiece:
+    piece: Piece
+    rest_until_ms: int
 
 def _is_straight_line(origin, target):
     """True if target is reachable from origin along a single rook/bishop
@@ -60,6 +72,7 @@ class RealTimeArbiter:
         self.board = board
         self.pending_moves = []
         self.clock = 0
+        self._resting: list[RestingPiece] = []
 
     def add_move(self, piece, origin, target):
         # --- Rule 1: Movement Lock (Debounce) ---
@@ -67,10 +80,12 @@ class RealTimeArbiter:
         # attempt to issue it a new destination is rejected outright until
         # it becomes idle again. piece.state is the single source of truth
         # for this - it flips to State.moving the instant a move is
-        # accepted below, and only flips back to State.idle once that move
-        # concludes (arrival in _apply_move, being blocked in
-        # _truncate_move, or being invalidated in _resolve_single /
-        # _resolve_collision). Nothing else in this class is allowed to
+        # accepted below, and once that move concludes (arrival in
+        # _apply_move, being blocked in _truncate_move, or being
+        # invalidated in _resolve_single / _resolve_collision) the piece
+        # enters a rest state that _release_expired_rests later returns to
+        # State.idle. Resting pieces are rejected here by the same check.
+        # Nothing else in this class is allowed to
         # add a pending move for a piece without going through here first,
         # so this one check is sufficient - no need to separately scan
         # pending_moves for a matching origin.
@@ -110,7 +125,38 @@ class RealTimeArbiter:
                 king_captured = king_captured or self._resolve_collision(moves, target)
             else:
                 king_captured = king_captured or self._resolve_single(moves[0])
+        self._release_expired_rests()
         return king_captured
+
+    # ------------------------------------------------------------------
+    # Rest (cooldown) handling
+    # ------------------------------------------------------------------
+
+    def _begin_rest(self, piece: Piece, rest_state: State, stop_time_ms: int) -> None:
+        """Put a piece into a rest state that expires REST_DURATION_MS
+        after `stop_time_ms` - the deterministic clock time the piece
+        stopped moving (its move's arrival_time), NOT the current clock,
+        so rests behave identically however coarsely time is advanced."""
+        if piece.state == State.captured:
+            return
+        piece.state = rest_state
+        self._resting.append(RestingPiece(piece, stop_time_ms + REST_DURATION_MS[rest_state]))
+
+    def _release_expired_rests(self) -> None:
+        """Return pieces whose rest has expired to State.idle. Runs once
+        at the END of advance_time: rests are anchored to arrival_time,
+        so a rest that both starts and expires within a single large
+        advance_time call is released in that same call. Pieces captured
+        while resting are dropped, never resurrected."""
+        still_resting: list[RestingPiece] = []
+        for entry in self._resting:
+            if not entry.piece.state.is_resting():
+                continue
+            if entry.rest_until_ms <= self.clock:
+                entry.piece.state = State.idle
+            else:
+                still_resting.append(entry)
+        self._resting = still_resting
 
     # ------------------------------------------------------------------
     # Rules 2 & 3: temporal path-collision detection
@@ -237,9 +283,11 @@ class RealTimeArbiter:
         move.arrival_time = move.start_time + _move_distance(move.origin, stop_cell) * DEFAULT_MOVE_DELAY_MS
         if stop_cell == move.origin:
             # Blocked before it could take even a single step - there's
-            # nothing left to animate, so release the piece immediately
-            # rather than leaving it in State.moving toward its own square.
-            move.piece.state = State.idle
+            # nothing left to animate, so the move ends here and the piece
+            # rests rather than staying in State.moving toward its own
+            # square. arrival_time was just reset to start_time above, so
+            # the rest anchors there.
+            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
             self.pending_moves.remove(move)
 
     # ------------------------------------------------------------------
@@ -275,7 +323,7 @@ class RealTimeArbiter:
                 # Same-color pieces can't capture one another - it simply
                 # never lands on the contested square, same as a blocked
                 # move elsewhere.
-                m.piece.state = State.idle
+                self._begin_rest(m.piece, State.long_rest, m.arrival_time)
                 continue
             m.piece.state = State.captured
             if self.board.get_piece_at(m.origin) == m.piece:
@@ -285,7 +333,7 @@ class RealTimeArbiter:
         # could have become illegal in the meantime. _resolve_single already
         # does this check for the single-mover case; do it here too.
         if not self._is_still_valid(winner):
-            winner.piece.state = State.idle
+            self._begin_rest(winner.piece, State.long_rest, winner.arrival_time)
             return False
         return self._apply_move(winner)
 
@@ -294,7 +342,7 @@ class RealTimeArbiter:
         if move.origin != move.target and not self._is_still_valid(move):
             # The move never happened - don't leave the piece stuck
             # thinking it's still mid-move.
-            move.piece.state = State.idle
+            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
             return False
         return self._apply_move(move)
 
@@ -311,12 +359,13 @@ class RealTimeArbiter:
 
     def _apply_move(self, move):
         if move.origin == move.target:
-            move.piece.state = State.idle
+            # A jump landing - the piece never left its square.
+            self._begin_rest(move.piece, State.short_rest, move.arrival_time)
             return False
 
         target_piece = self.board.get_piece_at(move.target)
         is_game_over = target_piece != EMPTY_CELL and target_piece.type == PieceType.KING
         self.board.move_piece(move.origin, move.target)
-        move.piece.state = State.idle
+        self._begin_rest(move.piece, State.long_rest, move.arrival_time)
         return is_game_over
 
