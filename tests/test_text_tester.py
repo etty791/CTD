@@ -13,7 +13,7 @@ from textTester.parser import (
     parse_input, is_valid_board, create_board,
     create_commands, create_piece_from_string
 )
-from textTester.printer import print_board
+from textTester.printer import print_board, print_score
 
 VALID_TOKENS = {
     '.', 'wK', 'wQ', 'wR', 'wB', 'wN', 'wP',
@@ -139,6 +139,10 @@ class TestCreateCommands:
         cmds = create_commands(["print board"])
         assert cmds == [("print",)]
 
+    def test_print_score_command(self):
+        cmds = create_commands(["print score"])
+        assert cmds == [("print_score",)]
+
     def test_multiple_commands(self):
         cmds = create_commands(["click 0 0", "wait 100", "print board"])
         assert len(cmds) == 3
@@ -240,6 +244,18 @@ class TestPrintBoard:
         print_board(board)
         line = capsys.readouterr().out.strip()
         assert ' ' in line
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# printer.py – print_score
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPrintScore:
+    def test_prints_both_colors(self, capsys):
+        print_score({Color.WHITE: 3, Color.BLACK: 0})
+        out = capsys.readouterr().out
+        assert "White: 3" in out
+        assert "Black: 0" in out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
