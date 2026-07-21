@@ -10,7 +10,8 @@ class AssetManager:
         self.base_path = current_file_dir
         self._assets = {
             "board": None,
-            "pieces": {}
+            "pieces": {},
+            "scenes": {}
         }
         self.load_initial()
 
@@ -24,6 +25,7 @@ class AssetManager:
         board_height, board_width = board.img.shape[:2]
         tile_size = (board_width // DEFAULT_BOARD_SIZE, board_height // DEFAULT_BOARD_SIZE)
         self._load_pieces(tile_size)
+        self._load_scenes((board_width, board_height))
 
     def _load_pieces(self, tile_size):
         pieces_dir = self.base_path / "pieces"
@@ -69,6 +71,36 @@ class AssetManager:
                 
                 self._assets["pieces"][piece_name][state_name] = state_data
 
+    def _load_scenes(self, canvas_size):
+        """Loads board-level overlay scenes (SceneAnimator) from
+        view/assets/scenes/<name>/ - same config.json + sprites/ shape as
+        _load_pieces, but sized to the full canvas rather than a tile."""
+        scenes_dir = self.base_path / "scenes"
+
+        if not scenes_dir.exists():
+            return
+
+        for scene_path in scenes_dir.iterdir():
+            if not scene_path.is_dir():
+                continue
+
+            scene_data = {"config": {}, "sprites": []}
+
+            config_file = scene_path / "config.json"
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    scene_data["config"] = json.load(f)
+
+            sprites_dir = scene_path / "sprites"
+            if sprites_dir.exists():
+                for sprite_file in sorted(sprites_dir.iterdir()):
+                    if sprite_file.suffix.lower() in ['.png', '.jpg']:
+                        img = Img()
+                        img.read(str(sprite_file), size=canvas_size, keep_aspect=False)
+                        scene_data["sprites"].append(img)
+
+            self._assets["scenes"][scene_path.name] = scene_data
+
     def get_board(self):
         return self._assets["board"]
 
@@ -78,3 +110,9 @@ class AssetManager:
         מחזיר מילון עם config ורשימת sprites עבור כלי ומצב ספציפיים
         """
         return self._assets["pieces"].get(piece_name, {}).get(state_name, None)
+
+    def get_scene(self, scene_name):
+        """Returns the {"config", "sprites"} dict for a board-level overlay
+        scene (see SceneAnimator), or None if that scene's folder hasn't
+        been dropped into view/assets/scenes/ yet."""
+        return self._assets["scenes"].get(scene_name, None)

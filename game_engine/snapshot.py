@@ -1,6 +1,6 @@
-from typing import List
+from typing import Dict, List
 from model.position import Position
-from model.piece import State
+from model.piece import Color, State
 from model.game_snapshot import PieceDTO
 
 
@@ -10,9 +10,10 @@ class GameSnapshot:
     needs real_time knowledge of pending moves, which model must not
     depend on."""
 
-    def __init__(self, board, arbiter):
+    def __init__(self, board, arbiter, score_tracker):
         self._board = board
         self._arbiter = arbiter
+        self._score_tracker = score_tracker
 
     def get_all_pieces(self) -> List[PieceDTO]:
         moves_by_piece_id = {move.piece.id: move for move in self._arbiter.pending_moves}
@@ -38,6 +39,9 @@ class GameSnapshot:
                         ))
 
         return pieces
+
+    def get_scores(self) -> Dict[Color, int]:
+        return {color: self._score_tracker.get_score(color) for color in Color}
 
     def _motion(self, piece, pos, moves_by_piece_id, clock):
         move = moves_by_piece_id.get(piece.id)

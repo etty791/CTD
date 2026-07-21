@@ -38,7 +38,7 @@ def validate_move(
         #     return MoveValidation(False, "outside_board")
         
         piece = board.get_piece_at(source)
-        if board.is_cell_empty(piece.position):
+        if board.is_cell_empty(source):
             return MoveValidation(False, "empty_source")
 
         # if board.is_friendly(destination, piece.color):

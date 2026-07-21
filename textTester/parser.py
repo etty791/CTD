@@ -109,4 +109,6 @@ def create_commands(command_lines):
         elif action == "print":
             if parts[1] == "board":
                 commands.append(("print",))
+            elif parts[1] == "score":
+                commands.append(("print_score",))
     return commands
