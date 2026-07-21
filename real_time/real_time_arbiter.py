@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from model.board import EMPTY_CELL
-from model.piece import Piece, PieceType, State
+from model.piece import Piece, PieceType, Color, State
 from rules.rules_engine import validate_move
 from model.position import Position
 from real_time.real_time_config import *
+from events.event_bus import EventBus
+from events.game_events import GameEnded, MoveCompleted, MoveStarted, PieceCaptured
 
 REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
@@ -12,17 +15,21 @@ REST_DURATION_MS = {
 }
 
 class Move:
-    def __init__(self, piece, origin, target, arrival_time, start_time):
+    def __init__(self, piece, origin, target, arrival_time, start_time, move_id):
         self.piece = piece
         self.origin = origin
         self.target = target
         self.arrival_time = arrival_time
         self.start_time = start_time
+        self.move_id = move_id
 
 @dataclass
 class RestingPiece:
     piece: Piece
     rest_until_ms: int
+
+def _opposite_color(color: Color) -> Color:
+    return Color.BLACK if color == Color.WHITE else Color.WHITE
 
 def _is_straight_line(origin, target):
     """True if target is reachable from origin along a single rook/bishop
@@ -68,11 +75,33 @@ def _move_distance(origin, target):
 
 class RealTimeArbiter:
 
-    def __init__(self, board):
+    def __init__(self, board, event_bus: Optional[EventBus] = None):
         self.board = board
         self.pending_moves = []
         self.clock = 0
         self._resting: list[RestingPiece] = []
+        self._next_move_id = 1
+        self.event_bus = event_bus
+
+    def _new_move_id(self) -> int:
+        move_id = self._next_move_id
+        self._next_move_id += 1
+        return move_id
+
+    def _publish(self, event) -> None:
+        """No-op when no event_bus was provided, so callers/tests never
+        have to construct one just to use the arbiter."""
+        if self.event_bus is not None:
+            self.event_bus.publish(event)
+
+    def _record_capture(self, captured_piece: Piece, capturing_move_id: int) -> None:
+        """Publish PieceCaptured for `captured_piece`, attributing it to the
+        move (`capturing_move_id`) whose arrival or path caused the capture -
+        scoring itself is not the arbiter's concern; see ScoreTracker."""
+        self._publish(PieceCaptured(
+            captured_piece.id, captured_piece.type, captured_piece.color,
+            captured_piece.position, capturing_move_id,
+        ))
 
     def add_move(self, piece, origin, target):
         # --- Rule 1: Movement Lock (Debounce) ---
@@ -101,18 +130,20 @@ class RealTimeArbiter:
 
         distance = _move_distance(origin, target)
         arrival_time = self.clock + (distance * DEFAULT_MOVE_DELAY_MS)
-        move = Move(piece, origin, target, arrival_time, self.clock)
+        move = Move(piece, origin, target, arrival_time, self.clock, self._new_move_id())
         piece.state = State.moving
         self.pending_moves.append(move)
+        self._publish(MoveStarted(move.move_id, piece.id, origin, target))
         return True
-    
+
     def add_jump(self, piece, pos):
         if piece.state != State.idle:
             return False
         arrival_time = self.clock + DEFAULT_MOVE_DELAY_MS
-        move = Move(piece, pos, pos, arrival_time, self.clock)
+        move = Move(piece, pos, pos, arrival_time, self.clock, self._new_move_id())
         piece.state = State.airborne
         self.pending_moves.append(move)
+        self._publish(MoveStarted(move.move_id, piece.id, pos, pos))
         return True
     
     def advance_time(self, ms):
@@ -204,7 +235,8 @@ class RealTimeArbiter:
                     if a.start_time <= t_b <= a.arrival_time:
                         kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
                         # The moving piece 'b' takes the fate (gets blocked or captured)
-                        consider(b, t_b, kind, (path_b, a.origin))
+                        payload = (path_b, a.origin, a.move_id) if kind == 'capture' else (path_b, a.origin)
+                        consider(b, t_b, kind, payload)
                     continue # Skip standard collision logic for this pair
 
                 if is_b_airborne and not is_a_airborne:
@@ -213,7 +245,8 @@ class RealTimeArbiter:
                     if b.start_time <= t_a <= b.arrival_time:
                         kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
                         # The moving piece 'a' takes the fate (gets blocked or captured)
-                        consider(a, t_a, kind, (path_a, b.origin))
+                        payload = (path_a, b.origin, b.move_id) if kind == 'capture' else (path_a, b.origin)
+                        consider(a, t_a, kind, payload)
                     continue # Skip standard collision logic for this pair
 
                 if is_a_airborne and is_b_airborne:
@@ -244,10 +277,11 @@ class RealTimeArbiter:
                         consider(b, resolution_time, kind, (path_b, cell))
                 else:
                     # Capture (different colors): the earlier piece is destroyed
+                    # by the later (surviving) piece's move.
                     if t_a <= t_b:
-                        consider(a, resolution_time, kind, (path_a, cell))
+                        consider(a, resolution_time, kind, (path_a, cell, b.move_id))
                     if t_b <= t_a:
-                        consider(b, resolution_time, kind, (path_b, cell))
+                        consider(b, resolution_time, kind, (path_b, cell, a.move_id))
 
         king_captured = False
         for move in list(moves):
@@ -256,18 +290,21 @@ class RealTimeArbiter:
                 continue
             _, kind, payload = outcome
             if kind == 'capture':
+                path, cell, capturing_move_id = payload
                 if move.piece.type == PieceType.KING:
                     king_captured = True
-                self._capture_in_flight(move)
+                    self._publish(GameEnded(_opposite_color(move.piece.color)))
+                self._capture_in_flight(move, capturing_move_id)
             else:
                 path, cell = payload
                 self._truncate_move(move, path, cell)
         return king_captured
 
-    def _capture_in_flight(self, move):
+    def _capture_in_flight(self, move, capturing_move_id):
         """A piece is destroyed mid-transit by an opposite-color piece
         that reaches their shared square later than it does."""
         move.piece.state = State.captured
+        self._record_capture(move.piece, capturing_move_id)
         if self.board.get_piece_at(move.origin) == move.piece:
             self.board.set_piece_at(move.origin, EMPTY_CELL)
         self.pending_moves.remove(move)
@@ -326,6 +363,7 @@ class RealTimeArbiter:
                 self._begin_rest(m.piece, State.long_rest, m.arrival_time)
                 continue
             m.piece.state = State.captured
+            self._record_capture(m.piece, winner.move_id)
             if self.board.get_piece_at(m.origin) == m.piece:
                 self.board.set_piece_at(m.origin, EMPTY_CELL)
         # The winner still needs to be validated - e.g. it could turn out
@@ -361,11 +399,23 @@ class RealTimeArbiter:
         if move.origin == move.target:
             # A jump landing - the piece never left its square.
             self._begin_rest(move.piece, State.short_rest, move.arrival_time)
+            self._publish(MoveCompleted(
+                move.move_id, move.piece.id, move.piece.type, move.piece.color,
+                move.origin, move.target,
+            ))
             return False
 
         target_piece = self.board.get_piece_at(move.target)
         is_game_over = target_piece != EMPTY_CELL and target_piece.type == PieceType.KING
+        if target_piece != EMPTY_CELL:
+            self._record_capture(target_piece, move.move_id)
         self.board.move_piece(move.origin, move.target)
         self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+        self._publish(MoveCompleted(
+            move.move_id, move.piece.id, move.piece.type, move.piece.color,
+            move.origin, move.target,
+        ))
+        if is_game_over:
+            self._publish(GameEnded(_opposite_color(target_piece.color)))
         return is_game_over
 
