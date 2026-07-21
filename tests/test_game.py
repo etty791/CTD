@@ -5,6 +5,8 @@ from model.piece import Piece, Color, PieceType
 from model.position import Position
 from rules.rules_engine import MoveValidation
 from game_engine.game import KungFuChessGame
+from events.event_bus import EventBus
+from events.game_events import GameStarted
 
 EMPTY = "."
 
@@ -38,6 +40,26 @@ class TestMoveRequestSameSquare:
     def test_returns_false(self):
         game, _ = make_game_with_piece()
         assert game.move_request(pos(0, 0), pos(0, 0)) is False
+
+
+# ── event bus wiring ──────────────────────────────────────────────────────────
+
+class TestEvents:
+    def test_game_exposes_an_event_bus(self):
+        game, _ = make_game_with_piece()
+        assert isinstance(game.events, EventBus)
+
+    def test_game_start_publishes_game_started(self):
+        grid = empty_board()
+        grid[0][0] = make_piece("WHITE", "ROOK", 0, 0)
+
+        # Subscribing after construction can't observe the start-of-game
+        # publish, so patch EventBus.publish to capture it as it happens.
+        with patch.object(EventBus, "publish", autospec=True) as mock_publish:
+            KungFuChessGame(grid)
+
+        published_events = [call.args[1] for call in mock_publish.call_args_list]
+        assert any(isinstance(e, GameStarted) for e in published_events)
 
 
 # ── move_request: game already over ──────────────────────────────────────────

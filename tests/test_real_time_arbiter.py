@@ -404,6 +404,8 @@ class TestRest:
         arb.advance_time(LONG_REST_DURATION_MS)
         assert rook.state == State.idle
 
+
+class TestCapturedWhileResting:
     def test_captured_while_resting_stays_captured(self):
         b = empty_board()
         white = place(b, "WHITE", "ROOK", 0, 3)
