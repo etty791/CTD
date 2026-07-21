@@ -20,12 +20,16 @@ class GameLoop:
         self.last_wait_time = time.time()
 
     def _mouse_callback(self, event, x, y, flags, param):
-       
+        # The board is drawn offset within the window by the left score
+        # panel's width (see GameRenderer._pixel_position) - translate back
+        # to board-local pixels before handing off to the controller.
+        board_x = x - self.renderer.score_panel_width
+
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.controller.handle_click(x, y)
-            
+            self.controller.handle_click(board_x, y)
+
         elif event == cv2.EVENT_RBUTTONDOWN:
-            self.controller.handle_jump(x, y)
+            self.controller.handle_jump(board_x, y)
 
     def run(self):
         while self.running:
