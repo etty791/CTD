@@ -2,6 +2,7 @@ from typing import Dict, List
 from model.position import Position
 from model.piece import Color, State
 from model.game_snapshot import PieceDTO
+from game_engine.payloads import GameStatePayload, PiecePayload
 
 
 class GameSnapshot:
@@ -42,6 +43,12 @@ class GameSnapshot:
 
     def get_scores(self) -> Dict[Color, int]:
         return {color: self._score_tracker.get_score(color) for color in Color}
+
+    def to_payload(self) -> GameStatePayload:
+        return GameStatePayload(
+            pieces=[PiecePayload.from_piece_dto(piece) for piece in self.get_all_pieces()],
+            scores={color.value: score for color, score in self.get_scores().items()},
+        )
 
     def _motion(self, piece, pos, moves_by_piece_id, clock):
         move = moves_by_piece_id.get(piece.id)
