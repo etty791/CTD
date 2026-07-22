@@ -1,4 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
+
+from server.protocol import Envelope
 
 app = FastAPI()
 
@@ -13,7 +16,15 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_text()
-            await websocket.send_text(f"echo: {data}")
+            raw = await websocket.receive_text()
+            try:
+                envelope = Envelope.model_validate_json(raw)
+            except ValidationError as exc:
+                error = Envelope(type="error", payload={"message": str(exc)})
+                await websocket.send_text(error.model_dump_json())
+                continue
+
+            # temporary: just bounce it back as confirmation
+            await websocket.send_text(envelope.model_dump_json())
     except WebSocketDisconnect:
         print("client disconnected")
