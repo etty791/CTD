@@ -4,7 +4,8 @@ from pydantic import ValidationError
 from server.connection import Connection
 from server.connection_manager import ConnectionManager
 from server.dispatcher import dispatch
-from server.protocol import Envelope
+from server.handlers import registry
+from server.protocol import Envelope, MessageType
 import server.handlers  # noqa: F401 -- import registers handlers with the dispatcher
 
 app = FastAPI()
@@ -38,4 +39,12 @@ async def websocket_endpoint(websocket: WebSocket):
             await dispatch(conn, envelope)
     except WebSocketDisconnect:
         manager.remove(conn.id)
+        if conn.player_session:
+            game = registry.get_game_for_player(conn.player_session.player_id)
+            if game:
+                opponent = game.opponent_of(conn.player_session.player_id)
+                await opponent.connection.send(
+                    Envelope(type=MessageType.RESIGN, payload={"reason": "opponent_disconnected"}, game_id=game.id)
+                )
+                registry.remove(game.id)
         print(f"{conn.id} disconnected")
