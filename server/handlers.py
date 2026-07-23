@@ -1,10 +1,19 @@
 from typing import Optional
 
-from model.position import Position
+from pydantic import ValidationError
+
 from server.connection import Connection
 from server.dispatcher import register
 from server.game_registry import GameRegistry
+from server.messages import AuthAckPayload, AuthPayload, MovePayload
 from server.protocol import Envelope, MessageType
+from server.server_config import (
+    AUTH_STATUS_OK,
+    ERROR_ILLEGAL_MOVE,
+    ERROR_NOT_AUTHENTICATED,
+    ERROR_NOT_IN_GAME,
+    ERROR_NOT_YOUR_PIECE,
+)
 from server.session import PlayerSession
 
 registry = GameRegistry()
@@ -15,12 +24,17 @@ _waiting_player: Optional[PlayerSession] = None
 async def handle_auth(conn: Connection, envelope: Envelope) -> None:
     global _waiting_player
 
-    player_id = envelope.payload.get("player_id")
-    if not player_id:
-        await conn.send_error("auth payload requires player_id")
+    try:
+        auth_payload = AuthPayload.model_validate(envelope.payload)
+    except ValidationError as exc:
+        await conn.send_error(str(exc))
         return
-    session = PlayerSession(player_id, conn)
-    await conn.send(Envelope(type=MessageType.AUTH, payload={"status": "ok", "player_id": player_id}))
+
+    session = PlayerSession(auth_payload.player_id, conn)
+    await conn.send(Envelope(
+        type=MessageType.AUTH,
+        payload=AuthAckPayload(status=AUTH_STATUS_OK, player_id=auth_payload.player_id).model_dump(),
+    ))
 
     if _waiting_player is None:
         _waiting_player = session
@@ -31,39 +45,37 @@ async def handle_auth(conn: Connection, envelope: Envelope) -> None:
     await game.broadcast_state()
 
 
-def _position_from_dict(raw: dict) -> Optional[Position]:
-    if "x" not in raw or "y" not in raw:
-        return None
-    return Position(raw["x"], raw["y"])
-
-
+#TODO: wrong seperation, not supposed to check is cell empty etc
 @register(MessageType.MOVE)
 async def handle_move(conn: Connection, envelope: Envelope) -> None:
     if conn.player_session is None:
-        await conn.send_error("not authenticated")
+        await conn.send_error(ERROR_NOT_AUTHENTICATED)
         return
 
     game = registry.get_game_for_player(conn.player_session.player_id)
     if game is None:
-        await conn.send_error("not in a game")
+        await conn.send_error(ERROR_NOT_IN_GAME)
         return
 
-    origin = _position_from_dict(envelope.payload.get("from", {}))
-    target = _position_from_dict(envelope.payload.get("to", {}))
-    if origin is None or target is None:
-        await conn.send_error("move payload requires from={x,y} and to={x,y}")
+    try:
+        move_payload = MovePayload.model_validate(envelope.payload)
+    except ValidationError as exc:
+        await conn.send_error(str(exc))
         return
+
+    origin = move_payload.from_.to_position()
+    target = move_payload.to.to_position()
 
     player_id = conn.player_session.player_id
     if not game.engine.board.is_cell_empty(origin):
         piece_color = game.engine.board.get_piece_at(origin).color
         if piece_color != game.color_of[player_id]:
-            await conn.send_error("not your piece")
+            await conn.send_error(ERROR_NOT_YOUR_PIECE)
             return
 
     validation = game.engine.move_request(origin, target)
     if not validation.is_valid:
-        await conn.send_error(f"illegal move: {validation.reason}")
+        await conn.send_error(ERROR_ILLEGAL_MOVE.format(reason=validation.reason))
         return
 
     await game.broadcast_state()

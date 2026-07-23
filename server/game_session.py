@@ -1,8 +1,8 @@
-import dataclasses
 import uuid
 
 from game_engine.game import KungFuChessGame
 from model.piece import Color
+from server.messages import StatePayload
 from server.protocol import Envelope, MessageType
 from server.session import PlayerSession
 
@@ -25,8 +25,7 @@ class GameSession:
         return self.players[other_id]
 
     async def broadcast_state(self) -> None:
-        state_payload = self.engine.get_snapshot().to_payload()
-        #TODO: understand exactly what is sent here
-        envelope = Envelope(type=MessageType.STATE, payload=dataclasses.asdict(state_payload), game_id=self.id)
+        state_payload = StatePayload.from_game_state_payload(self.engine.get_snapshot().to_payload())
+        envelope = Envelope(type=MessageType.STATE, payload=state_payload.model_dump(), game_id=self.id)
         for session in self.players.values():
             await session.connection.send(envelope)

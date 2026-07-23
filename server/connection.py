@@ -2,7 +2,8 @@ import uuid
 
 from fastapi import WebSocket
 
-from server.protocol import Envelope
+from server.messages import ErrorPayload
+from server.protocol import Envelope, MessageType
 
 
 class Connection:
@@ -15,4 +16,4 @@ class Connection:
         await self.websocket.send_text(envelope.model_dump_json())
 
     async def send_error(self, message: str) -> None:
-        await self.send(Envelope(type="error", payload={"message": message}))
+        await self.send(Envelope(type=MessageType.ERROR, payload=ErrorPayload(message=message).model_dump()))
