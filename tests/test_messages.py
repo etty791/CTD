@@ -4,7 +4,6 @@ from pydantic import ValidationError
 from model.piece import Color, PieceType, State
 from model.position import Position
 from model.game_snapshot import PieceDTO
-from game_engine.payloads import GameStatePayload, PiecePayload as PieceDataclassPayload
 from server.messages import AuthPayload, MovePayload, PiecePayload, PositionPayload, StatePayload
 
 
@@ -19,6 +18,20 @@ def sample_piece_dto():
         target=Position(0, 3),
         progress=0.5,
     )
+
+
+class FakeSnapshot:
+    """Duck-types the GameSnapshot surface StatePayload.from_snapshot needs."""
+
+    def __init__(self, pieces, scores):
+        self._pieces = pieces
+        self._scores = scores
+
+    def get_all_pieces(self):
+        return self._pieces
+
+    def get_scores(self):
+        return self._scores
 
 
 class TestAuthPayload:
@@ -57,10 +70,8 @@ class TestPositionPayload:
 
 
 class TestPiecePayload:
-    def test_from_piece_payload_mirrors_dataclass_fields(self):
-        dto = sample_piece_dto()
-        dataclass_payload = PieceDataclassPayload.from_piece_dto(dto)
-        payload = PiecePayload.from_piece_payload(dataclass_payload)
+    def test_from_piece_dto_mirrors_dto_fields(self):
+        payload = PiecePayload.from_piece_dto(sample_piece_dto())
 
         assert payload.model_dump() == {
             "id": 1,
@@ -75,26 +86,18 @@ class TestPiecePayload:
 
 
 class TestStatePayload:
-    def test_from_game_state_payload_mirrors_dataclass(self):
-        dto = sample_piece_dto()
-        dataclass_payload = GameStatePayload(
-            pieces=[PieceDataclassPayload.from_piece_dto(dto)],
-            scores={"w": 1, "b": 0},
-        )
+    def test_from_snapshot_mirrors_snapshot(self):
+        snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 1, Color.BLACK: 0})
 
-        payload = StatePayload.from_game_state_payload(dataclass_payload)
+        payload = StatePayload.from_snapshot(snapshot)
 
         assert payload.scores == {"w": 1, "b": 0}
         assert len(payload.pieces) == 1
         assert payload.pieces[0].id == 1
 
     def test_model_dump_is_json_serialisable_shape(self):
-        dto = sample_piece_dto()
-        dataclass_payload = GameStatePayload(
-            pieces=[PieceDataclassPayload.from_piece_dto(dto)],
-            scores={"w": 0, "b": 0},
-        )
-        payload = StatePayload.from_game_state_payload(dataclass_payload)
+        snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 0, Color.BLACK: 0})
+        payload = StatePayload.from_snapshot(snapshot)
         dumped = payload.model_dump()
         assert set(dumped.keys()) == {"pieces", "scores"}
         assert dumped["pieces"][0]["position"] == {"x": 0, "y": 0}

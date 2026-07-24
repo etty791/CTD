@@ -7,7 +7,8 @@ from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from game_engine.payloads import GameStatePayload, PiecePayload as PieceDataclassPayload
+from game_engine.snapshot import GameSnapshot
+from model.game_snapshot import PieceDTO
 from model.position import Position
 
 
@@ -58,15 +59,15 @@ class PiecePayload(BaseModel):
     progress: float
 
     @classmethod
-    def from_piece_payload(cls, piece: PieceDataclassPayload) -> "PiecePayload":
+    def from_piece_dto(cls, piece: PieceDTO) -> "PiecePayload":
         return cls(
             id=piece.id,
-            position=PositionPayload(x=piece.position.x, y=piece.position.y),
-            type=piece.type,
-            color=piece.color,
-            state=piece.state,
-            origin=PositionPayload(x=piece.origin.x, y=piece.origin.y),
-            target=PositionPayload(x=piece.target.x, y=piece.target.y),
+            position=PositionPayload.from_position(piece.position),
+            type=piece.type.value,
+            color=piece.color.value,
+            state=piece.state.value,
+            origin=PositionPayload.from_position(piece.origin),
+            target=PositionPayload.from_position(piece.target),
             progress=piece.progress,
         )
 
@@ -76,8 +77,8 @@ class StatePayload(BaseModel):
     scores: Dict[str, int]
 
     @classmethod
-    def from_game_state_payload(cls, state: GameStatePayload) -> "StatePayload":
+    def from_snapshot(cls, snapshot: GameSnapshot) -> "StatePayload":
         return cls(
-            pieces=[PiecePayload.from_piece_payload(piece) for piece in state.pieces],
-            scores=dict(state.scores),
+            pieces=[PiecePayload.from_piece_dto(piece) for piece in snapshot.get_all_pieces()],
+            scores={color.value: score for color, score in snapshot.get_scores().items()},
         )

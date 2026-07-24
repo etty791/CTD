@@ -25,7 +25,7 @@ class GameSession:
         return self.players[other_id]
 
     async def broadcast_state(self) -> None:
-        state_payload = StatePayload.from_game_state_payload(self.engine.get_snapshot().to_payload())
+        state_payload = StatePayload.from_snapshot(self.engine.get_snapshot())
         envelope = Envelope(type=MessageType.STATE, payload=state_payload.model_dump(), game_id=self.id)
         for session in self.players.values():
             await session.connection.send(envelope)
