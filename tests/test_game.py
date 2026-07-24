@@ -4,6 +4,8 @@ from model.board import Board
 from model.piece import Piece, Color, PieceType
 from model.position import Position
 from rules.rules_engine import MoveValidation
+from rules.rules_config import MoveReason
+from model.piece import State
 from game_engine.game import KungFuChessGame
 from events.event_bus import EventBus
 from events.game_events import GameStarted
@@ -180,6 +182,39 @@ class TestWait:
         game.wait(2000)
         game.wait(3001)
         assert game.board.get_piece_at(pos(0, 5)) == piece
+
+
+# ── jump_request ──────────────────────────────────────────────────────────────
+
+class TestJumpRequest:
+    def test_jump_on_resting_piece_returns_reason_without_raising(self):
+        # Regression: line 45 previously referenced an undefined name, so a jump
+        # on a resting piece raised NameError instead of returning a validation.
+        game, piece = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        piece.state = State.long_rest
+        result = game.jump_request(pos(0, 0))
+        assert isinstance(result, MoveValidation)
+        assert not result.is_valid
+        assert result.reason == MoveReason.PIECE_RESTING
+
+    def test_jump_on_empty_cell_rejected(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        result = game.jump_request(pos(4, 4))
+        assert not result.is_valid
+        assert result.reason == MoveReason.EMPTY_SOURCE
+
+    def test_jump_after_game_over_rejected(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        game.finish_game()
+        result = game.jump_request(pos(0, 0))
+        assert not result.is_valid
+        assert result.reason == MoveReason.GAME_OVER
+
+    def test_jump_on_idle_piece_accepted(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        result = game.jump_request(pos(0, 0))
+        assert result.is_valid
+        assert result.reason == MoveReason.OK
 
 
 # ── initial state ─────────────────────────────────────────────────────────────

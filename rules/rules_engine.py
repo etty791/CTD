@@ -5,6 +5,7 @@ from model.board import Board
 from model.piece import PieceType
 from model.position import Position
 
+from rules.rules_config import MoveReason
 from rules.piece_rules import (
     BishopRules,
     KingRules,
@@ -39,13 +40,13 @@ def validate_move(
         
         piece = board.get_piece_at(source)
         if board.is_cell_empty(source):
-            return MoveValidation(False, "empty_source")
+            return MoveValidation(False, MoveReason.EMPTY_SOURCE)
 
         # if board.is_friendly(destination, piece.color):
         #     return MoveValidation(False, "friendly_destination")
 
         rules = _rules[piece.type]
         if destination not in rules.legal_destinations(board, piece):
-            return MoveValidation(False, "illegal_piece_move")
+            return MoveValidation(False, MoveReason.ILLEGAL_PIECE_MOVE)
 
-        return MoveValidation(True, "ok")
+        return MoveValidation(True, MoveReason.OK)
