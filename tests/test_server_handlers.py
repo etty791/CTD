@@ -51,7 +51,7 @@ class TestHandleAuth:
         assert conn.player_session is not None
         assert conn.player_session.player_id == "p1"
         assert conn.sent[-1].type == MessageType.AUTH
-        assert conn.sent[-1].payload == {"status": "ok", "player_id": "p1"}
+        assert conn.sent[-1].payload == {"status": "ok", "player_id": "p1", "rating": None}
 
 
 class TestHandleMove:

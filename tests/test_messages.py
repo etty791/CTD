@@ -4,7 +4,20 @@ from pydantic import ValidationError
 from model.piece import Color, PieceType, State
 from model.position import Position
 from model.game_snapshot import PieceDTO
-from server.messages import AuthPayload, MovePayload, PiecePayload, PositionPayload, StatePayload
+from server.messages import (
+    AuthAckPayload,
+    AuthPayload,
+    CredentialsPayload,
+    GameOverPayload,
+    GameStartPayload,
+    JoinRoomPayload,
+    JumpPayload,
+    MovePayload,
+    PiecePayload,
+    PositionPayload,
+    RatingChangePayload,
+    StatePayload,
+)
 
 
 def sample_piece_dto():
@@ -101,3 +114,103 @@ class TestStatePayload:
         dumped = payload.model_dump()
         assert set(dumped.keys()) == {"pieces", "scores"}
         assert dumped["pieces"][0]["position"] == {"x": 0, "y": 0}
+
+
+class TestCredentialsPayload:
+    def test_round_trips(self):
+        payload = CredentialsPayload(username="alice", password="pw")
+        restored = CredentialsPayload.model_validate(payload.model_dump())
+        assert restored.username == "alice"
+        assert restored.password == "pw"
+
+    def test_missing_password_raises(self):
+        with pytest.raises(ValidationError):
+            CredentialsPayload.model_validate({"username": "alice"})
+
+
+class TestAuthAckPayload:
+    def test_validates_without_rating(self):
+        payload = AuthAckPayload.model_validate({"status": "ok", "player_id": "alice"})
+        assert payload.rating is None
+
+    def test_validates_with_rating(self):
+        payload = AuthAckPayload.model_validate(
+            {"status": "ok", "player_id": "alice", "rating": 1234}
+        )
+        assert payload.rating == 1234
+
+    def test_round_trips_through_json(self):
+        payload = AuthAckPayload(status="ok", player_id="alice", rating=1200)
+        restored = AuthAckPayload.model_validate_json(payload.model_dump_json())
+        assert restored == payload
+
+
+class TestJoinRoomPayload:
+    def test_round_trips(self):
+        payload = JoinRoomPayload(room_name="r1")
+        assert JoinRoomPayload.model_validate(payload.model_dump()).room_name == "r1"
+
+    def test_missing_room_name_raises(self):
+        with pytest.raises(ValidationError):
+            JoinRoomPayload.model_validate({})
+
+
+class TestJumpPayload:
+    def test_round_trips_through_position(self):
+        payload = JumpPayload.model_validate({"pos": {"x": 2, "y": 5}})
+        assert payload.pos.to_position() == Position(2, 5)
+
+    def test_malformed_position_raises(self):
+        with pytest.raises(ValidationError):
+            JumpPayload.model_validate({"pos": {"x": 2}})
+
+
+class TestGameStartPayload:
+    def test_player_round_trips(self):
+        payload = GameStartPayload(
+            game_id="g1",
+            role="player",
+            color="w",
+            white_username="alice",
+            black_username="bob",
+        )
+        restored = GameStartPayload.model_validate(payload.model_dump())
+        assert restored == payload
+
+    def test_observer_color_none_validates(self):
+        payload = GameStartPayload.model_validate(
+            {
+                "game_id": "g1",
+                "role": "observer",
+                "color": None,
+                "white_username": "alice",
+                "black_username": "bob",
+            }
+        )
+        assert payload.color is None
+
+
+class TestRatingChangePayload:
+    def test_round_trips(self):
+        payload = RatingChangePayload(username="alice", old_rating=1200, new_rating=1216)
+        restored = RatingChangePayload.model_validate(payload.model_dump())
+        assert restored == payload
+
+
+class TestGameOverPayload:
+    def test_round_trips_with_rating_changes(self):
+        payload = GameOverPayload(
+            winner="w",
+            reason="king_captured",
+            rating_changes=[
+                RatingChangePayload(username="alice", old_rating=1200, new_rating=1216),
+                RatingChangePayload(username="bob", old_rating=1200, new_rating=1184),
+            ],
+        )
+        restored = GameOverPayload.model_validate_json(payload.model_dump_json())
+        assert restored == payload
+        assert len(restored.rating_changes) == 2
+
+    def test_empty_rating_changes_default(self):
+        payload = GameOverPayload(winner="w", reason="king_captured")
+        assert payload.rating_changes == []

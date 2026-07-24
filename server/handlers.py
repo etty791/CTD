@@ -8,11 +8,11 @@ from server.game_registry import GameRegistry
 from server.messages import AuthAckPayload, AuthPayload, MovePayload
 from server.protocol import Envelope, MessageType
 from server.server_config import (
-    AUTH_STATUS_OK,
     ERROR_ILLEGAL_MOVE,
     ERROR_NOT_AUTHENTICATED,
     ERROR_NOT_IN_GAME,
     ERROR_NOT_YOUR_PIECE,
+    Status,
 )
 from server.session import PlayerSession
 
@@ -33,7 +33,7 @@ async def handle_auth(conn: Connection, envelope: Envelope) -> None:
     session = PlayerSession(auth_payload.player_id, conn)
     await conn.send(Envelope(
         type=MessageType.AUTH,
-        payload=AuthAckPayload(status=AUTH_STATUS_OK, player_id=auth_payload.player_id).model_dump(),
+        payload=AuthAckPayload(status=Status.OK, player_id=auth_payload.player_id).model_dump(),
     ))
 
     if _waiting_player is None:

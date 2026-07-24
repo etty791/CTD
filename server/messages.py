@@ -28,9 +28,15 @@ class AuthPayload(BaseModel):
     player_id: str
 
 
+class CredentialsPayload(BaseModel):
+    username: str
+    password: str
+
+
 class AuthAckPayload(BaseModel):
     status: str
     player_id: str
+    rating: int | None = None
 
 
 class ErrorPayload(BaseModel):
@@ -41,11 +47,39 @@ class ResignPayload(BaseModel):
     reason: str
 
 
+class JoinRoomPayload(BaseModel):
+    room_name: str
+
+
 class MovePayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     from_: PositionPayload = Field(alias="from")
     to: PositionPayload
+
+
+class JumpPayload(BaseModel):
+    pos: PositionPayload
+
+
+class GameStartPayload(BaseModel):
+    game_id: str
+    role: str
+    color: str | None
+    white_username: str
+    black_username: str
+
+
+class RatingChangePayload(BaseModel):
+    username: str
+    old_rating: int
+    new_rating: int
+
+
+class GameOverPayload(BaseModel):
+    winner: str
+    reason: str
+    rating_changes: List[RatingChangePayload] = Field(default_factory=list)
 
 
 class PiecePayload(BaseModel):
