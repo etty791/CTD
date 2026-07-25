@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from model.piece import Color
+
 # --- HTTP / WebSocket routes ---
 WS_PATH = "/ws"
 HEALTH_PATH = "/health"
@@ -22,9 +24,21 @@ class Role(StrEnum):
 ROLE_PLAYER = Role.PLAYER
 ROLE_OBSERVER = Role.OBSERVER
 
-# --- Room / matchmaking ---
+# --- Rooms ---
 ROOM_STATUS_WAITING = "waiting"
-QUICK_MATCH_ROOM_PREFIX = "quickmatch-"
+MAX_PLAYERS_PER_ROOM = 2
+# Seat order: first player (creator) is White, second is Black.
+SEAT_COLORS = (Color.WHITE, Color.BLACK)
+# Short, typeable room ids. Crockford base32 alphabet (no I, L, O, U).
+ROOM_ID_LENGTH = 6
+ROOM_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+# --- Matchmaking (ELO seek pool) ---
+# A "Play" seeker is paired with a waiting seeker within this rating band;
+# if none appears within the timeout, matchmaking gives up.
+MATCH_ELO_RANGE = 100
+MATCH_TIMEOUT_MS = 60_000
+ERROR_NO_MATCH_FOUND = "no opponent found"
 
 # --- Ticking / game-over reasons ---
 TICK_MS = 50
