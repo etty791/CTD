@@ -24,9 +24,9 @@ from server.server_config import (
     MAX_PLAYERS_PER_ROOM,
     ROOM_ID_ALPHABET,
     ROOM_ID_LENGTH,
-    Role,
     SEAT_COLORS,
 )
+from shared.protocol_config import Role
 from server.session import PlayerSession
 
 

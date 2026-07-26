@@ -4,9 +4,10 @@ from pydantic import ValidationError
 
 from server.connection import Connection
 from server.dispatcher import register
+from server.encoding import state_payload_from_snapshot
 from server.game_registry import GameRegistry
 from server.game_session import GameSession
-from server.messages import (
+from shared.messages import (
     AuthAckPayload,
     CredentialsPayload,
     GameStartPayload,
@@ -14,9 +15,8 @@ from server.messages import (
     JumpPayload,
     MovePayload,
     RoomWaitingPayload,
-    StatePayload,
 )
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 from server.rooms import Room, RoomManager
 from server.async_clock import AsyncClock
 from server.persistence.worker import PersistenceWorker
@@ -32,12 +32,9 @@ from server.server_config import (
     ERROR_OBSERVER_CANNOT_MOVE,
     ERROR_ROOM_NOT_FOUND,
     ERROR_USERNAME_TAKEN,
-    MATCH_TIMEOUT_MS,
-    ROOM_STATUS_WAITING,
     TICK_MS,
-    Role,
-    Status,
 )
+from shared.protocol_config import MATCH_TIMEOUT_MS, ROOM_STATUS_WAITING, Role, Status
 from server.session import PlayerSession
 from model.piece import Color
 
@@ -234,7 +231,7 @@ async def handle_join_room(conn: Connection, envelope: Envelope) -> None:
         )
         # Personal snapshot, not a broadcast -- otherwise they'd wait up to
         # TICK_MS for the next tick to see the board.
-        state_payload = StatePayload.from_snapshot(game.engine.get_snapshot())
+        state_payload = state_payload_from_snapshot(game.engine.get_snapshot())
         await conn.send(
             Envelope(
                 type=MessageType.STATE,

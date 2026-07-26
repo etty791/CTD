@@ -8,7 +8,7 @@ from server import handlers
 from server.game_registry import GameRegistry
 from server.persistence.db import Database
 from server.persistence.user_repository import GameResultRatings, UserRepository
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 from server.rooms import RoomManager
 from server.server_config import (
     ERROR_ALREADY_IN_GAME,
@@ -22,8 +22,8 @@ from server.server_config import (
     ERROR_ROOM_NOT_FOUND,
     ERROR_USERNAME_TAKEN,
     GAME_OVER_REASON_DISCONNECT,
-    ROOM_STATUS_WAITING,
 )
+from shared.protocol_config import ROOM_STATUS_WAITING
 from server.session import PlayerSession
 
 

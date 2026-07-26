@@ -7,7 +7,7 @@ from server.connection import Connection
 from server.connection_manager import ConnectionManager
 from server.dispatcher import dispatch
 from server.persistence.persistence_config import resolve_db_path
-from server.protocol import Envelope
+from shared.protocol import Envelope
 from server.server_config import (
     DEBUG_CONNECTIONS_PATH,
     GAME_OVER_REASON_DISCONNECT,

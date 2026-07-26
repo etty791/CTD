@@ -1,14 +1,18 @@
 """Pydantic payload models for the WebSocket protocol.
 
 Each `MessageType` that carries a structured payload gets a dedicated model
-here so handlers validate `Envelope.payload`
+here so handlers validate `Envelope.payload`.
+
+These models depend on `model/` only: encoding a server-side `GameSnapshot`
+into a `StatePayload` lives in `server/encoding.py`, so the wire contract
+stays free of `game_engine` knowledge the client has no use for.
 """
 from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from game_engine.snapshot import GameSnapshot
 from model.game_snapshot import PieceDTO
+from model.piece import Color, PieceType, State
 from model.position import Position
 
 
@@ -110,14 +114,19 @@ class PiecePayload(BaseModel):
             progress=piece.progress,
         )
 
+    def to_piece_dto(self) -> PieceDTO:
+        return PieceDTO(
+            id=self.id,
+            position=self.position.to_position(),
+            type=PieceType(self.type),
+            color=Color(self.color),
+            state=State(self.state),
+            origin=self.origin.to_position(),
+            target=self.target.to_position(),
+            progress=self.progress,
+        )
+
 
 class StatePayload(BaseModel):
     pieces: List[PiecePayload]
     scores: Dict[str, int]
-
-    @classmethod
-    def from_snapshot(cls, snapshot: GameSnapshot) -> "StatePayload":
-        return cls(
-            pieces=[PiecePayload.from_piece_dto(piece) for piece in snapshot.get_all_pieces()],
-            scores={color.value: score for color, score in snapshot.get_scores().items()},
-        )

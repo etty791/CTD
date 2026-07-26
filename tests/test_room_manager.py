@@ -13,8 +13,8 @@ from server.server_config import (
     MATCH_ELO_RANGE,
     ROOM_ID_ALPHABET,
     ROOM_ID_LENGTH,
-    Role,
 )
+from shared.protocol_config import Role
 
 
 @dataclass

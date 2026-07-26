@@ -1,7 +1,7 @@
 import asyncio
 
 from server.connection import Connection
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 
 
 class FakeWebSocket:

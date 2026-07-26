@@ -1,6 +1,8 @@
-"""Server-wide constants: routes, protocol status values, and error messages."""
+"""Server-only constants: routes, room/matchmaking knobs, and error messages.
 
-from enum import StrEnum
+Values the client must interpret identically (statuses, roles, the
+matchmaking timeout) live in `shared/protocol_config.py` instead.
+"""
 
 from model.piece import Color
 
@@ -9,23 +11,7 @@ WS_PATH = "/ws"
 HEALTH_PATH = "/health"
 DEBUG_CONNECTIONS_PATH = "/debug/connections"
 
-# --- Protocol status values (shared by AUTH / REGISTER / LOGIN acks) ---
-class Status(StrEnum):
-    OK = "ok"
-    FAILED = "failed"
-
-
-# --- Player roles within a room ---
-class Role(StrEnum):
-    PLAYER = "player"
-    OBSERVER = "observer"
-
-
-ROLE_PLAYER = Role.PLAYER
-ROLE_OBSERVER = Role.OBSERVER
-
 # --- Rooms ---
-ROOM_STATUS_WAITING = "waiting"
 MAX_PLAYERS_PER_ROOM = 2
 # Seat order: first player (creator) is White, second is Black.
 SEAT_COLORS = (Color.WHITE, Color.BLACK)
@@ -35,9 +21,9 @@ ROOM_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 # --- Matchmaking (ELO seek pool) ---
 # A "Play" seeker is paired with a waiting seeker within this rating band;
-# if none appears within the timeout, matchmaking gives up.
+# if none appears within MATCH_TIMEOUT_MS (shared/protocol_config.py, since
+# the client waits on it too), matchmaking gives up.
 MATCH_ELO_RANGE = 100
-MATCH_TIMEOUT_MS = 60_000
 ERROR_NO_MATCH_FOUND = "no opponent found"
 
 # --- Ticking / game-over reasons ---

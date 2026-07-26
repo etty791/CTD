@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from model.piece import Color, PieceType, State
 from model.position import Position
 from model.game_snapshot import PieceDTO
-from server.messages import (
+from shared.messages import (
     AuthAckPayload,
     AuthPayload,
     CredentialsPayload,
@@ -32,20 +32,6 @@ def sample_piece_dto():
         target=Position(0, 3),
         progress=0.5,
     )
-
-
-class FakeSnapshot:
-    """Duck-types the GameSnapshot surface StatePayload.from_snapshot needs."""
-
-    def __init__(self, pieces, scores):
-        self._pieces = pieces
-        self._scores = scores
-
-    def get_all_pieces(self):
-        return self._pieces
-
-    def get_scores(self):
-        return self._scores
 
 
 class TestAuthPayload:
@@ -98,23 +84,29 @@ class TestPiecePayload:
             "progress": 0.5,
         }
 
+    def test_dto_round_trips_through_the_wire(self):
+        dto = sample_piece_dto()
+
+        restored = PiecePayload.model_validate_json(
+            PiecePayload.from_piece_dto(dto).model_dump_json()
+        ).to_piece_dto()
+
+        assert restored == dto
+        assert restored.type is PieceType.ROOK
+        assert restored.color is Color.WHITE
+        assert restored.state is State.moving
+
 
 class TestStatePayload:
-    def test_from_snapshot_mirrors_snapshot(self):
-        snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 1, Color.BLACK: 0})
+    def test_round_trips_through_json(self):
+        payload = StatePayload(
+            pieces=[PiecePayload.from_piece_dto(sample_piece_dto())], scores={"w": 1, "b": 0}
+        )
 
-        payload = StatePayload.from_snapshot(snapshot)
+        restored = StatePayload.model_validate_json(payload.model_dump_json())
 
-        assert payload.scores == {"w": 1, "b": 0}
-        assert len(payload.pieces) == 1
-        assert payload.pieces[0].id == 1
-
-    def test_model_dump_is_json_serialisable_shape(self):
-        snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 0, Color.BLACK: 0})
-        payload = StatePayload.from_snapshot(snapshot)
-        dumped = payload.model_dump()
-        assert set(dumped.keys()) == {"pieces", "scores"}
-        assert dumped["pieces"][0]["position"] == {"x": 0, "y": 0}
+        assert restored == payload
+        assert set(payload.model_dump().keys()) == {"pieces", "scores"}
 
 
 class TestCredentialsPayload:

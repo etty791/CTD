@@ -1,7 +1,7 @@
 from typing import Awaitable, Callable
 
 from server.connection import Connection
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 from server.server_config import ERROR_NO_HANDLER
 
 Handler = Callable[[Connection, Envelope], Awaitable[None]]

@@ -3,8 +3,8 @@ import uuid
 
 from fastapi import WebSocket
 
-from server.messages import ErrorPayload
-from server.protocol import Envelope, MessageType
+from shared.messages import ErrorPayload
+from shared.protocol import Envelope, MessageType
 
 
 class Connection:

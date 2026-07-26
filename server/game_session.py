@@ -22,13 +22,13 @@ from game_engine.game import KungFuChessGame
 from events.game_events import GameEnded
 from model.piece import Color
 from server.async_clock import AsyncClock, TimerHandle
-from server.messages import (
+from server.encoding import state_payload_from_snapshot
+from shared.messages import (
     GameOverPayload,
     RatingChangePayload,
-    StatePayload,
 )
 from server.persistence.worker import PersistenceWorker
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 from server.server_config import GAME_OVER_REASON_KING_CAPTURED
 from server.session import PlayerSession
 
@@ -94,7 +94,7 @@ class GameSession:
     # --- broadcasting -----------------------------------------------------
 
     async def broadcast_state(self) -> None:
-        state_payload = StatePayload.from_snapshot(self.engine.get_snapshot())
+        state_payload = state_payload_from_snapshot(self.engine.get_snapshot())
         envelope = Envelope(
             type=MessageType.STATE,
             payload=state_payload.model_dump(),

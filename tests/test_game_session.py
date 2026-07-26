@@ -6,7 +6,7 @@ from model.piece import Color
 from server.game_registry import GameRegistry
 from server.game_session import GameSession
 from server.persistence.user_repository import GameResultRatings
-from server.protocol import Envelope, MessageType
+from shared.protocol import Envelope, MessageType
 from server.server_config import (
     GAME_OVER_REASON_DISCONNECT,
     GAME_OVER_REASON_KING_CAPTURED,

@@ -1,3 +1,5 @@
+"""The envelope every WebSocket frame is wrapped in, and its message types."""
+
 from enum import Enum
 from typing import Any, Optional
 
