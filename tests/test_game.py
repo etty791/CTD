@@ -39,9 +39,15 @@ def pos(x, y):
 # ── move_request: same-origin-as-target ──────────────────────────────────────
 
 class TestMoveRequestSameSquare:
-    def test_returns_false(self):
+    def test_is_rejected(self):
         game, _ = make_game_with_piece()
-        assert game.move_request(pos(0, 0), pos(0, 0)) is False
+        result = game.move_request(pos(0, 0), pos(0, 0))
+        assert result.is_valid is False
+
+    def test_rejection_reason_is_illegal_piece_move(self):
+        game, _ = make_game_with_piece()
+        result = game.move_request(pos(0, 0), pos(0, 0))
+        assert result.reason == MoveReason.ILLEGAL_PIECE_MOVE
 
 
 # ── event bus wiring ──────────────────────────────────────────────────────────
