@@ -1,4 +1,8 @@
-from server.game_session import GameSession
+from typing import Optional
+
+from server.async_clock import AsyncClock
+from server.game_session import FinalizeCallback, GameSession
+from server.persistence.worker import PersistenceWorker
 from server.session import PlayerSession
 
 
@@ -7,11 +11,22 @@ class GameRegistry:
         self._games: dict[str, GameSession] = {}
         self._player_to_game: dict[str, str] = {}
 
-    def create_game(self, player_a: PlayerSession, player_b: PlayerSession) -> GameSession:
-        game = GameSession(player_a, player_b)
+    def create_game(
+        self,
+        player_a: PlayerSession,
+        player_b: PlayerSession,
+        clock: AsyncClock,
+        persistence: PersistenceWorker,
+        room_id: str,
+        on_finalize: Optional[FinalizeCallback] = None,
+    ) -> GameSession:
+        game = GameSession(
+            player_a, player_b, clock, persistence, room_id, on_finalize
+        )
         self._games[game.id] = game
         self._player_to_game[player_a.player_id] = game.id
         self._player_to_game[player_b.player_id] = game.id
+        game.start_ticking()
         return game
 
     def get(self, game_id: str) -> GameSession | None:
@@ -24,5 +39,6 @@ class GameRegistry:
     def remove(self, game_id: str) -> None:
         game = self._games.pop(game_id, None)
         if game:
+            game.cancel_ticking()  # defensive: stop the loop if still live
             for pid in game.players:
                 self._player_to_game.pop(pid, None)

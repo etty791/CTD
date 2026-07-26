@@ -19,6 +19,35 @@ class FakeConnection:
         await self.send(Envelope(type=MessageType.ERROR, payload={"message": message}))
 
 
+class _FakeHandle:
+    def cancel(self) -> None:
+        pass
+
+
+class _FakeClock:
+    """Records the tick callback; never spawns a real asyncio loop."""
+
+    def every(self, callback):
+        return _FakeHandle()
+
+
+class _FakePersistence:
+    """Inert persistence stub for game setup in move tests."""
+
+    def submit(self, fn):
+        from concurrent.futures import Future
+
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+
+def _create_test_game(player_a, player_b):
+    return handlers.registry.create_game(
+        player_a, player_b, _FakeClock(), _FakePersistence(), room_id="r1"
+    )
+
+
 @pytest.fixture(autouse=True)
 def reset_handler_state():
     """handlers.registry / _waiting_player are module-level singletons; give
@@ -80,7 +109,7 @@ class TestHandleMove:
         conn = FakeConnection()
         player_a = PlayerSession("p1", conn)
         player_b = PlayerSession("p2", FakeConnection())
-        handlers.registry.create_game(player_a, player_b)
+        _create_test_game(player_a, player_b)
         envelope = Envelope(type=MessageType.MOVE, payload={"from": {"x": 0, "y": 0}})
 
         await handlers.handle_move(conn, envelope)
@@ -92,7 +121,7 @@ class TestHandleMove:
         conn = FakeConnection()
         player_a = PlayerSession("p1", conn)
         player_b = PlayerSession("p2", FakeConnection())
-        handlers.registry.create_game(player_a, player_b)
+        _create_test_game(player_a, player_b)
         envelope = Envelope(type=MessageType.MOVE, payload={"to": {"x": 0, "y": 0}})
 
         await handlers.handle_move(conn, envelope)
