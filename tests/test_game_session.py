@@ -260,3 +260,43 @@ class TestGameRegistry:
         assert registry.get(game.id) is None
         assert registry.get_game_for_player("white") is None
         assert clock.handle.cancelled is True
+
+    def test_add_observer_resolves_via_get_game_for_player(self):
+        registry = GameRegistry()
+        player_a = PlayerSession("white", FakeConnection())
+        player_b = PlayerSession("black", FakeConnection())
+        game = registry.create_game(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="r1"
+        )
+
+        registry.add_observer(game.id, "obs")
+
+        assert registry.get_game_for_player("obs") is game
+
+    def test_remove_player_mapping_drops_a_single_entry(self):
+        registry = GameRegistry()
+        player_a = PlayerSession("white", FakeConnection())
+        player_b = PlayerSession("black", FakeConnection())
+        game = registry.create_game(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="r1"
+        )
+        registry.add_observer(game.id, "obs")
+
+        registry.remove_player_mapping("obs")
+
+        assert registry.get_game_for_player("obs") is None
+        assert registry.get_game_for_player("white") is game  # unaffected
+
+    def test_remove_clears_observer_mappings_too(self):
+        registry = GameRegistry()
+        player_a = PlayerSession("white", FakeConnection())
+        player_b = PlayerSession("black", FakeConnection())
+        game = registry.create_game(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="r1"
+        )
+        registry.add_observer(game.id, "obs")
+        game.add_observer(PlayerSession("obs", FakeConnection()))
+
+        registry.remove(game.id)
+
+        assert registry.get_game_for_player("obs") is None

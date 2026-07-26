@@ -16,6 +16,7 @@ from server.messages import (
     PiecePayload,
     PositionPayload,
     RatingChangePayload,
+    RoomWaitingPayload,
     StatePayload,
 )
 
@@ -147,12 +148,19 @@ class TestAuthAckPayload:
 
 class TestJoinRoomPayload:
     def test_round_trips(self):
-        payload = JoinRoomPayload(room_name="r1")
-        assert JoinRoomPayload.model_validate(payload.model_dump()).room_name == "r1"
+        payload = JoinRoomPayload(room_id="r1")
+        assert JoinRoomPayload.model_validate(payload.model_dump()).room_id == "r1"
 
-    def test_missing_room_name_raises(self):
+    def test_missing_room_id_raises(self):
         with pytest.raises(ValidationError):
             JoinRoomPayload.model_validate({})
+
+
+class TestRoomWaitingPayload:
+    def test_round_trips(self):
+        payload = RoomWaitingPayload(room_id="r1", status="waiting")
+        restored = RoomWaitingPayload.model_validate(payload.model_dump())
+        assert restored == payload
 
 
 class TestJumpPayload:

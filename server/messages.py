@@ -48,7 +48,12 @@ class ResignPayload(BaseModel):
 
 
 class JoinRoomPayload(BaseModel):
-    room_name: str
+    room_id: str
+
+
+class RoomWaitingPayload(BaseModel):
+    room_id: str
+    status: str
 
 
 class MovePayload(BaseModel):
