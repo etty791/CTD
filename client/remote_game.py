@@ -27,7 +27,6 @@ from model.board import EMPTY_CELL
 from model.game_snapshot import PieceDTO
 from model.piece import Color
 from model.position import Position
-from rules.rules_engine import MoveValidation
 from shared.messages import (
     GameOverPayload,
     JumpPayload,
@@ -41,6 +40,16 @@ from view.view_config import DEFAULT_BOARD_SIZE
 OBSERVER_CANNOT_MOVE_REASON = "observer_cannot_move"
 MOVE_OK_REASON = "ok"
 NO_SCORE = 0
+
+
+@dataclass(frozen=True)
+class RemoteMoveResult:
+    """Client-side stand-in for rules.rules_engine.MoveValidation: same
+    (is_valid, reason) shape, defined locally so the client never imports
+    the rules/ layer - the server is the sole validator of moves."""
+
+    is_valid: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -100,9 +109,9 @@ class RemoteGame:
         self._started = False
         self._lock = threading.Lock()
 
-    def move_request(self, origin: Position, target: Position) -> MoveValidation:
+    def move_request(self, origin: Position, target: Position) -> RemoteMoveResult:
         if self._is_observer:
-            return MoveValidation(False, OBSERVER_CANNOT_MOVE_REASON)
+            return RemoteMoveResult(False, OBSERVER_CANNOT_MOVE_REASON)
         self._connection.send(
             Envelope(
                 type=MessageType.MOVE,
@@ -112,18 +121,18 @@ class RemoteGame:
                 ).model_dump(by_alias=True),
             )
         )
-        return MoveValidation(True, MOVE_OK_REASON)
+        return RemoteMoveResult(True, MOVE_OK_REASON)
 
-    def jump_request(self, pos: Position) -> MoveValidation:
+    def jump_request(self, pos: Position) -> RemoteMoveResult:
         if self._is_observer:
-            return MoveValidation(False, OBSERVER_CANNOT_MOVE_REASON)
+            return RemoteMoveResult(False, OBSERVER_CANNOT_MOVE_REASON)
         self._connection.send(
             Envelope(
                 type=MessageType.JUMP,
                 payload=JumpPayload(pos=PositionPayload.from_position(pos)).model_dump(),
             )
         )
-        return MoveValidation(True, MOVE_OK_REASON)
+        return RemoteMoveResult(True, MOVE_OK_REASON)
 
     def wait(self, ms: int) -> None:
         if not self._started:

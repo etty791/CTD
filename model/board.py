@@ -1,11 +1,12 @@
 from model.piece import Piece, Color, PieceType, State
 from model.position import Position
 EMPTY_CELL= '.'
+BOARD_SIZE = 8
 
 class Board:
     @classmethod
     def generate_standard_grid(cls):
-        grid = [[EMPTY_CELL for _ in range(8)] for _ in range(8)]
+        grid = [[EMPTY_CELL for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         piece_id = 1
 
         def place_piece(row, col, color, p_type):
@@ -23,11 +24,11 @@ class Board:
             PieceType.KING, PieceType.BISHOP, PieceType.KNIGHT, PieceType.ROOK
         ]
 
-        for col in range(8):
+        for col in range(BOARD_SIZE):
             place_piece(0, col, Color.BLACK, back_rank[col])
             place_piece(1, col, Color.BLACK, PieceType.PAWN)
 
-        for col in range(8):
+        for col in range(BOARD_SIZE):
             place_piece(6, col, Color.WHITE, PieceType.PAWN)
             place_piece(7, col, Color.WHITE, back_rank[col])
 

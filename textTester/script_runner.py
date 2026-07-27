@@ -8,12 +8,14 @@ from input.controller import Controller
 from input.board_mapper import BoardMapper
 from view.view_config import DEFAULT_BOARD_SIZE
 from textTester.printer import print_board, print_score
-
-VALID_TOKENS = {
-    '.',
-    'wK', 'wQ', 'wR', 'wB', 'wN', 'wP',
-    'bK', 'bQ', 'bR', 'bB', 'bN', 'bP'
-}
+from textTester.tester_config import (
+    CMD_CLICK,
+    CMD_JUMP,
+    CMD_PRINT,
+    CMD_WAIT,
+    ERROR_UNKNOWN_TOKEN,
+    VALID_TOKENS,
+)
 
 # The text tester has no rendered board image to derive pixel dimensions
 # from (unlike the GUI's BoardMapper, sized from the loaded board asset),
@@ -29,11 +31,11 @@ def run_script():
     board_mapper = BoardMapper(board_side_px, board_side_px)
     controller = Controller(game, board_mapper)
     COMMANDS_TO_ACTIONS = {
-        "click": lambda x, y: controller.handle_click(x, y),
-        "wait": game.wait,
-        "print": lambda: print_board(game.board),
+        CMD_CLICK: lambda x, y: controller.handle_click(x, y),
+        CMD_WAIT: game.wait,
+        CMD_PRINT: lambda: print_board(game.board),
         "print_score": lambda: print_score(game.get_snapshot().get_scores()),
-        "jump": lambda x, y: controller.handle_jump(x, y)
+        CMD_JUMP: lambda x, y: controller.handle_jump(x, y)
     }
 
     for cmd in commands:
@@ -41,7 +43,7 @@ def run_script():
         args = cmd[1:]
 
         if action not in COMMANDS_TO_ACTIONS:
-            print("ERROR UNKNOWN_TOKEN")
+            print(ERROR_UNKNOWN_TOKEN)
             exit(1)
 
         COMMANDS_TO_ACTIONS[action](*args)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from model.board import EMPTY_CELL
@@ -13,6 +14,12 @@ REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
     State.short_rest: SHORT_REST_DURATION_MS,
 }
+
+class _CollisionOutcome(Enum):
+    """Fate assigned to a move by _resolve_path_collisions: CAPTURE destroys
+    the losing piece mid-transit, TRUNCATE stops it one square short."""
+    CAPTURE = "capture"
+    TRUNCATE = "truncate"
 
 class Move:
     def __init__(self, piece, origin, target, arrival_time, start_time, move_id):
@@ -206,7 +213,7 @@ class RealTimeArbiter:
         Handles both standard moving collisions and airborne interceptions.
         """
         moves = self.pending_moves
-        # id(move) -> (resolution_time, 'capture' | 'truncate', payload)
+        # id(move) -> (resolution_time, _CollisionOutcome, payload)
         fate = {}
 
         def consider(move, resolution_time, kind, payload):
@@ -233,9 +240,9 @@ class RealTimeArbiter:
                     t_b = self._time_at_cell(b, path_b, a.origin)
                     # Check if moving piece 'b' arrives during the 1000ms jump window
                     if a.start_time <= t_b <= a.arrival_time:
-                        kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
+                        kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
                         # The moving piece 'b' takes the fate (gets blocked or captured)
-                        payload = (path_b, a.origin, a.move_id) if kind == 'capture' else (path_b, a.origin)
+                        payload = (path_b, a.origin, a.move_id) if kind == _CollisionOutcome.CAPTURE else (path_b, a.origin)
                         consider(b, t_b, kind, payload)
                     continue # Skip standard collision logic for this pair
 
@@ -243,9 +250,9 @@ class RealTimeArbiter:
                     t_a = self._time_at_cell(a, path_a, b.origin)
                     # Check if moving piece 'a' arrives during the 1000ms jump window
                     if b.start_time <= t_a <= b.arrival_time:
-                        kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
+                        kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
                         # The moving piece 'a' takes the fate (gets blocked or captured)
-                        payload = (path_a, b.origin, b.move_id) if kind == 'capture' else (path_a, b.origin)
+                        payload = (path_a, b.origin, b.move_id) if kind == _CollisionOutcome.CAPTURE else (path_a, b.origin)
                         consider(a, t_a, kind, payload)
                     continue # Skip standard collision logic for this pair
 
@@ -267,9 +274,9 @@ class RealTimeArbiter:
                 t_a = self._time_at_cell(a, path_a, cell)
                 t_b = self._time_at_cell(b, path_b, cell)
                 resolution_time = max(t_a, t_b)
-                kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
+                kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
 
-                if kind == 'truncate':
+                if kind == _CollisionOutcome.TRUNCATE:
                     # Block (same color): the later piece stops
                     if t_a >= t_b:
                         consider(a, resolution_time, kind, (path_a, cell))
@@ -289,7 +296,7 @@ class RealTimeArbiter:
             if outcome is None:
                 continue
             _, kind, payload = outcome
-            if kind == 'capture':
+            if kind == _CollisionOutcome.CAPTURE:
                 path, cell, capturing_move_id = payload
                 if move.piece.type == PieceType.KING:
                     king_captured = True

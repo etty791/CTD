@@ -1,8 +1,10 @@
 from model.piece import Color
+from model.position import Position
 
 
 def print_board(board):
-    for row in board._grid:
+    for x in range(board.rows):
+        row = (board.get_piece_at(Position(x, y)) for y in range(board.cols))
         print(" ".join(str(cell) for cell in row))
 
 

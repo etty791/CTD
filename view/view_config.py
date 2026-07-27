@@ -1,7 +1,8 @@
+from model.board import BOARD_SIZE
 from model.piece import State
 from events.game_events import GameStarted, GameEnded, MoveStarted, PieceCaptured
 
-DEFAULT_BOARD_SIZE=8
+DEFAULT_BOARD_SIZE = BOARD_SIZE
 SQUARE_SIZE=1
 
 STATE_ASSET_FOLDER = {

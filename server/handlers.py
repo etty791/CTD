@@ -280,7 +280,6 @@ async def handle_play(conn: Connection, envelope: Envelope) -> None:
 
 # --- in-game moves ---------------------------------------------------------
 
-#TODO: wrong seperation, not supposed to check is cell empty etc
 @register(MessageType.MOVE)
 async def handle_move(conn: Connection, envelope: Envelope) -> None:
     if conn.player_session is None:
@@ -306,11 +305,10 @@ async def handle_move(conn: Connection, envelope: Envelope) -> None:
     origin = move_payload.from_.to_position()
     target = move_payload.to.to_position()
 
-    if not game.engine.board.is_cell_empty(origin):
-        piece_color = game.engine.board.get_piece_at(origin).color
-        if piece_color != game.color_of[player_id]:
-            await conn.send_error(ERROR_NOT_YOUR_PIECE)
-            return
+    piece_color = game.engine.piece_color_at(origin)
+    if piece_color is not None and piece_color != game.color_of[player_id]:
+        await conn.send_error(ERROR_NOT_YOUR_PIECE)
+        return
 
     validation = game.engine.move_request(origin, target)
     if not validation.is_valid:
@@ -343,11 +341,10 @@ async def handle_jump(conn: Connection, envelope: Envelope) -> None:
         return
 
     pos = jump_payload.pos.to_position()
-    if not game.engine.board.is_cell_empty(pos):
-        piece_color = game.engine.board.get_piece_at(pos).color
-        if piece_color != game.color_of[player_id]:
-            await conn.send_error(ERROR_NOT_YOUR_PIECE)
-            return
+    piece_color = game.engine.piece_color_at(pos)
+    if piece_color is not None and piece_color != game.color_of[player_id]:
+        await conn.send_error(ERROR_NOT_YOUR_PIECE)
+        return
 
     validation = game.engine.jump_request(pos)
     if not validation.is_valid:
