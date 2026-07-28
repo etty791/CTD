@@ -15,5 +15,5 @@ def run_GUI(game_engine):
     scene_animator = SceneAnimator(game_engine.events, asset_manager)
     renderer = GameRenderer(asset_manager, scene_animator)
     sound_player = SoundPlayer(game_engine.events)
-    game_loop = GameLoop(game_engine, asset_manager, renderer, controller)
+    game_loop = GameLoop(game_engine, asset_manager, renderer, controller, scene_animator)
     game_loop.run()

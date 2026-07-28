@@ -39,7 +39,7 @@ from events.game_events import (
 )
 from model.piece import Color
 from server.async_clock import AsyncClock, TimerHandle
-from server.encoding import state_payload_from_snapshot
+from server.encoding import event_payload_from, state_payload_from_snapshot
 from shared.messages import (
     GameOverPayload,
     RatingChangePayload,
@@ -66,6 +66,20 @@ STATE_CHANGING_EVENTS = (
     GameEnded,
 )
 
+# The subset of STATE_CHANGING_EVENTS forwarded to clients as their own EVENT
+# envelope (see _on_forwarded_event/_broadcast_event below), for client-side
+# consumers like SoundPlayer that need per-event cues rather than a coalesced
+# STATE diff. GameEnded is excluded: it's already carried by GAME_OVER via
+# the finalize pipeline, so forwarding it again here would be redundant.
+FORWARDED_EVENTS = (
+    MoveStarted,
+    MoveCompleted,
+    MoveTruncated,
+    MoveAborted,
+    PieceCaptured,
+    RestEnded,
+)
+
 
 class GameSession:
     def __init__(
@@ -84,6 +98,8 @@ class GameSession:
         self.engine.events.subscribe(GameEnded, self._on_game_ended)
         for event_type in STATE_CHANGING_EVENTS:
             self.engine.events.subscribe(event_type, self._mark_dirty)
+        for event_type in FORWARDED_EVENTS:
+            self.engine.events.subscribe(event_type, self._on_forwarded_event)
 
         self.players: dict[str, PlayerSession] = {
             player_a.player_id: player_a,
@@ -150,6 +166,25 @@ class GameSession:
         envelope = Envelope(
             type=MessageType.STATE,
             payload=state_payload.model_dump(),
+            game_id=self.id,
+        )
+        await asyncio.gather(
+            *(session.connection.send(envelope) for session in self._recipients()),
+            return_exceptions=True,
+        )
+
+    def _on_forwarded_event(self, event) -> None:
+        """SYNC bus handler for FORWARDED_EVENTS. Unlike _mark_dirty, this is
+        not coalesced -- each event gets its own EVENT envelope/task, so
+        client-side per-event consumers (SoundPlayer) get 1:1 cues instead of
+        a single summarizing STATE diff."""
+        asyncio.create_task(self._broadcast_event(event))
+
+    async def _broadcast_event(self, event) -> None:
+        payload = event_payload_from(event)
+        envelope = Envelope(
+            type=MessageType.EVENT,
+            payload=payload.model_dump(),
             game_id=self.id,
         )
         await asyncio.gather(

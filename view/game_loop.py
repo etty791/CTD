@@ -4,11 +4,12 @@ import time
 from view.view_config import *
 
 class GameLoop:
-    def __init__(self, game, asset_manager, renderer, controller):
+    def __init__(self, game, asset_manager, renderer, controller, scene_animator):
         self.game = game
         self.asset_manager = asset_manager
         self.renderer = renderer
         self.controller = controller
+        self.scene_animator = scene_animator
 
         self.window_name = "Game Window"
         self.running = True
@@ -47,8 +48,25 @@ class GameLoop:
                 frame.show(self.window_name)
 
             key = cv2.waitKey(FRAME_DELAY_MS) & 0xFF
+            window_visible = cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) >= 1
 
-            if key == ord('q') or cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:
+            if key == KEY_RESIGN and self.game.game_active:
+                self._handle_resign()
+
+            if self._should_exit(key, window_visible):
                 self.running = False
 
         cv2.destroyAllWindows()
+
+    def _handle_resign(self) -> None:
+        # Local KungFuChessGame has no server to concede to, so it exposes
+        # no resign() -- only RemoteGame does, and this is a silent no-op
+        # for local play.
+        resign = getattr(self.game, "resign", None)
+        if resign is not None:
+            resign()
+
+    def _should_exit(self, key, window_visible: bool) -> bool:
+        if key == KEY_QUIT or not window_visible:
+            return True
+        return not self.game.game_active and not self.scene_animator.is_active()

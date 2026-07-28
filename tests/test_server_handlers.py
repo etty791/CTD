@@ -20,9 +20,11 @@ from server.server_config import (
     ERROR_NOT_YOUR_PIECE,
     ERROR_NO_MATCH_FOUND,
     ERROR_OBSERVER_CANNOT_MOVE,
+    ERROR_OBSERVER_CANNOT_RESIGN,
     ERROR_ROOM_NOT_FOUND,
     ERROR_USERNAME_TAKEN,
     GAME_OVER_REASON_DISCONNECT,
+    GAME_OVER_REASON_RESIGNATION,
 )
 from shared.protocol_config import ROOM_STATUS_WAITING
 from server.session import PlayerSession
@@ -145,12 +147,14 @@ def reset_handler_state():
     handlers.clock = _FakeClock()
     handlers.persistence = _InertPersistence()
     handlers.logged_in_usernames = set()
+    handlers._pending_seek_timers = {}
     yield
     handlers.registry = GameRegistry()
     handlers.room_manager = RoomManager()
     handlers.clock = _FakeClock()
     handlers.persistence = _InertPersistence()
     handlers.logged_in_usernames = set()
+    handlers._pending_seek_timers = {}
 
 
 class TestHandleRegister:
@@ -398,6 +402,62 @@ class TestHandlePlay:
 
         assert conn_a.errors == []
 
+    async def test_no_match_sends_queued_ack_before_scheduling_timeout(self, real_persistence):
+        handlers.persistence = real_persistence
+        real_persistence.repo.create_user("alice", "pw")
+        conn = FakeConnection()
+        PlayerSession("alice", conn)
+
+        await handlers.handle_play(conn, Envelope(type=MessageType.PLAY, payload={}))
+
+        play_acks = [e for e in conn.sent if e.type == MessageType.PLAY]
+        assert len(play_acks) == 1
+        assert play_acks[0].payload == {}
+        assert len(handlers.clock.after_calls) == 1
+        assert "alice" in handlers._pending_seek_timers
+
+
+class TestHandleCancelSeek:
+    async def test_not_authenticated_sends_error(self):
+        conn = FakeConnection()
+        await handlers.handle_cancel_seek(conn, Envelope(type=MessageType.CANCEL_SEEK, payload={}))
+
+        assert conn.errors == [ERROR_NOT_AUTHENTICATED]
+
+    async def test_cancels_pending_timer_and_seek_and_acks(self, real_persistence):
+        handlers.persistence = real_persistence
+        real_persistence.repo.create_user("alice", "pw")
+        real_persistence.repo.create_user("bob", "pw")
+        conn_a, conn_b = FakeConnection(), FakeConnection()
+        session_a = PlayerSession("alice", conn_a)
+        PlayerSession("bob", conn_b)
+
+        await handlers.handle_play(conn_a, Envelope(type=MessageType.PLAY, payload={}))
+        timer = handlers._pending_seek_timers["alice"]
+
+        await handlers.handle_cancel_seek(
+            conn_a, Envelope(type=MessageType.CANCEL_SEEK, payload={})
+        )
+
+        assert timer.cancelled is True
+        assert "alice" not in handlers._pending_seek_timers
+        assert any(e.type == MessageType.CANCEL_SEEK for e in conn_a.sent)
+
+        # alice is no longer in the seek pool: bob's play() finds no match either.
+        await handlers.handle_play(conn_b, Envelope(type=MessageType.PLAY, payload={}))
+        assert not any(e.type == MessageType.GAME_START for e in conn_b.sent)
+
+    async def test_cancel_when_not_seeking_still_acks(self, real_persistence):
+        handlers.persistence = real_persistence
+        real_persistence.repo.create_user("alice", "pw")
+        conn = FakeConnection()
+        PlayerSession("alice", conn)
+
+        await handlers.handle_cancel_seek(conn, Envelope(type=MessageType.CANCEL_SEEK, payload={}))
+
+        assert any(e.type == MessageType.CANCEL_SEEK for e in conn.sent)
+        assert conn.errors == []
+
 
 class TestHandleMove:
     async def test_not_authenticated_sends_error(self):
@@ -604,3 +664,48 @@ class TestOnGameFinalized:
 
         assert handlers.room_manager.room_of("obs") is None
         assert handlers.room_manager.room_exists(room_id) is False
+
+
+class TestHandleResign:
+    async def test_not_authenticated_sends_error(self):
+        conn = FakeConnection()
+        await handlers.handle_resign(conn, Envelope(type=MessageType.RESIGN, payload={}))
+
+        assert conn.errors == [ERROR_NOT_AUTHENTICATED]
+
+    async def test_not_in_a_game_sends_error(self):
+        conn = FakeConnection()
+        PlayerSession("p1", conn)
+
+        await handlers.handle_resign(conn, Envelope(type=MessageType.RESIGN, payload={}))
+
+        assert conn.errors == [ERROR_NOT_IN_GAME]
+
+    async def test_observer_cannot_resign(self):
+        handlers.persistence = _CannedPersistence()
+        conn_a, conn_b, conn_obs = FakeConnection(), FakeConnection(), FakeConnection()
+        player_a = PlayerSession("p1", conn_a)
+        player_b = PlayerSession("p2", conn_b)
+        game = _create_test_game(player_a, player_b)
+        observer = PlayerSession("obs", conn_obs)
+        game.add_observer(observer)
+        handlers.registry.add_observer(game.id, observer.player_id)
+
+        await handlers.handle_resign(conn_obs, Envelope(type=MessageType.RESIGN, payload={}))
+
+        assert conn_obs.errors == [ERROR_OBSERVER_CANNOT_RESIGN]
+
+    async def test_resigning_player_forfeits_to_opponent(self):
+        handlers.persistence = _CannedPersistence()
+        conn_a, conn_b = FakeConnection(), FakeConnection()
+        player_a = PlayerSession("p1", conn_a)  # White
+        player_b = PlayerSession("p2", conn_b)  # Black
+        _create_test_game(player_a, player_b)
+
+        await handlers.handle_resign(conn_a, Envelope(type=MessageType.RESIGN, payload={}))
+
+        for conn in (conn_a, conn_b):
+            game_over = [e for e in conn.sent if e.type == MessageType.GAME_OVER]
+            assert len(game_over) == 1
+            assert game_over[0].payload["winner"] == Color.BLACK.value
+            assert game_over[0].payload["reason"] == GAME_OVER_REASON_RESIGNATION

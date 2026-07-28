@@ -7,7 +7,7 @@ These models depend on `model/` only: encoding a server-side `GameSnapshot`
 into a `StatePayload` lives in `server/encoding.py`, so the wire contract
 stays free of `game_engine` knowledge the client has no use for.
 """
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,8 +53,15 @@ class ErrorPayload(BaseModel):
     message: str
 
 
-class ResignPayload(BaseModel):
-    reason: str
+class EventPayload(BaseModel):
+    """A forwarded engine event (MoveStarted, PieceCaptured, ...). Kept
+    generic -- `data` is a free-form dict rather than one field per event
+    dataclass -- so this module gains no dependency on `events/`; encoding
+    and decoding the real dataclasses lives on the server/client sides that
+    already have them (server/encoding.py, client/remote_game.py)."""
+
+    event_type: str
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class JoinRoomPayload(BaseModel):

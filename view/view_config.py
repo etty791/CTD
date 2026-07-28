@@ -16,6 +16,10 @@ MS_PER_SECOND = 1000
 FRAME_DELAY_MS = 33
 WAIT_TICK_INTERVAL_SECONDS = 1.0
 
+# GameLoop keybindings.
+KEY_QUIT = ord('q')
+KEY_RESIGN = ord('r')
+
 # Board-level overlay scenes (SceneAnimator) - a distinct concept from
 # per-piece STATE_ASSET_FOLDER above: only one of these plays at a time,
 # keyed by scene name rather than by piece State, and each folder is

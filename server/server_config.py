@@ -34,6 +34,7 @@ TICK_MS = 50
 MAX_STATE_INTERVAL_MS = 1000
 GAME_OVER_REASON_KING_CAPTURED = "king_captured"
 GAME_OVER_REASON_DISCONNECT = "opponent_disconnected"
+GAME_OVER_REASON_RESIGNATION = "resignation"
 # Same reason, surfaced on the RESIGN message a disconnect triggers.
 DISCONNECT_REASON = GAME_OVER_REASON_DISCONNECT
 
@@ -45,6 +46,7 @@ ERROR_NOT_YOUR_PIECE = "not your piece"
 ERROR_ILLEGAL_MOVE = "illegal move: {reason}"
 ERROR_NO_HANDLER = "no handler for type={type}"
 ERROR_OBSERVER_CANNOT_MOVE = "observers cannot move"
+ERROR_OBSERVER_CANNOT_RESIGN = "observers cannot resign"
 ERROR_ALREADY_LOGGED_IN = "already logged in"
 ERROR_USERNAME_TAKEN = "username taken"
 ERROR_BAD_CREDENTIALS = "bad credentials"

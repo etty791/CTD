@@ -25,13 +25,23 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from events.event_bus import EventBus
-from events.game_events import GameEnded, GameStarted
+from events.game_events import (
+    GameEnded,
+    GameStarted,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
 from model.board import EMPTY_CELL
 from model.game_snapshot import PieceDTO
-from model.piece import Color
+from model.piece import Color, PieceType
 from model.position import Position
 from shared.messages import (
     NO_SERVER_TIME_MS,
+    EventPayload,
     GameOverPayload,
     JumpPayload,
     MovePayload,
@@ -114,6 +124,73 @@ class RemoteGameState:
         return min(MOVE_FINISHED, max(MOVE_NOT_STARTED, travelled_ms / duration_ms))
 
 
+def _decode_move_started(data: dict) -> MoveStarted:
+    return MoveStarted(
+        move_id=data["move_id"],
+        piece_id=data["piece_id"],
+        src=PositionPayload.model_validate(data["src"]).to_position(),
+        dst=PositionPayload.model_validate(data["dst"]).to_position(),
+    )
+
+
+def _decode_move_completed(data: dict) -> MoveCompleted:
+    return MoveCompleted(
+        move_id=data["move_id"],
+        piece_id=data["piece_id"],
+        piece_type=PieceType(data["piece_type"]),
+        color=Color(data["color"]),
+        src=PositionPayload.model_validate(data["src"]).to_position(),
+        dst=PositionPayload.model_validate(data["dst"]).to_position(),
+    )
+
+
+def _decode_move_truncated(data: dict) -> MoveTruncated:
+    return MoveTruncated(
+        move_id=data["move_id"],
+        piece_id=data["piece_id"],
+        target=PositionPayload.model_validate(data["target"]).to_position(),
+        arrival_time_ms=data["arrival_time_ms"],
+    )
+
+
+def _decode_move_aborted(data: dict) -> MoveAborted:
+    return MoveAborted(
+        move_id=data["move_id"],
+        piece_id=data["piece_id"],
+        position=PositionPayload.model_validate(data["position"]).to_position(),
+    )
+
+
+def _decode_piece_captured(data: dict) -> PieceCaptured:
+    return PieceCaptured(
+        piece_id=data["piece_id"],
+        piece_type=PieceType(data["piece_type"]),
+        color=Color(data["color"]),
+        position=PositionPayload.model_validate(data["position"]).to_position(),
+        capturing_move_id=data["capturing_move_id"],
+    )
+
+
+def _decode_rest_ended(data: dict) -> RestEnded:
+    return RestEnded(
+        piece_id=data["piece_id"],
+        position=PositionPayload.model_validate(data["position"]).to_position(),
+    )
+
+
+# Keyed off each dataclass's own name -- symmetric with server/encoding.py's
+# _EVENT_ENCODERS, and immune to rename-drift since it's not a hand-typed
+# string literal.
+_EVENT_DECODERS: dict[str, Callable[[dict], object]] = {
+    MoveStarted.__name__: _decode_move_started,
+    MoveCompleted.__name__: _decode_move_completed,
+    MoveTruncated.__name__: _decode_move_truncated,
+    MoveAborted.__name__: _decode_move_aborted,
+    PieceCaptured.__name__: _decode_piece_captured,
+    RestEnded.__name__: _decode_rest_ended,
+}
+
+
 class RemoteBoardView:
     """The read-only slice of Board's API that Controller uses, backed by
     whichever game state is current."""
@@ -157,6 +234,11 @@ class RemoteGame:
         )
         return RemoteMoveResult(True, MOVE_OK_REASON)
 
+    def resign(self) -> None:
+        if self._is_observer:
+            return
+        self._connection.send(Envelope(type=MessageType.RESIGN, payload={}))
+
     def jump_request(self, pos: Position) -> RemoteMoveResult:
         if self._is_observer:
             return RemoteMoveResult(False, OBSERVER_CANNOT_MOVE_REASON)
@@ -188,3 +270,9 @@ class RemoteGame:
         self.game_active = False
         self.game_over_payload = payload
         self.events.publish(GameEnded(Color(payload.winner)))
+
+    def apply_event(self, payload: EventPayload) -> None:
+        decoder = _EVENT_DECODERS.get(payload.event_type)
+        if decoder is None:
+            return  # unknown/future event type -- ignore rather than crash the GUI
+        self.events.publish(decoder(payload.data))

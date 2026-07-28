@@ -5,7 +5,7 @@ plain synchronous methods, so no websocket or network thread is involved.
 """
 
 from client.network import ServerConnection
-from shared.messages import GameOverPayload, StatePayload
+from shared.messages import EventPayload, GameOverPayload, StatePayload
 from shared.protocol import Envelope, MessageType
 
 SERVER_URL = "ws://test/ws"
@@ -15,12 +15,16 @@ class FakeRemoteGame:
     def __init__(self):
         self.applied: list[StatePayload] = []
         self.ended: list[GameOverPayload] = []
+        self.events: list[EventPayload] = []
 
     def apply_state(self, payload: StatePayload) -> None:
         self.applied.append(payload)
 
     def end_game(self, payload: GameOverPayload) -> None:
         self.ended.append(payload)
+
+    def apply_event(self, payload: EventPayload) -> None:
+        self.events.append(payload)
 
 
 def state_envelope(server_time_ms: int) -> Envelope:
@@ -106,3 +110,30 @@ class TestOtherRouting:
         connection._route(envelope)
 
         assert connection.inbox.get_nowait() is envelope
+
+
+def event_envelope() -> Envelope:
+    return Envelope(
+        type=MessageType.EVENT,
+        payload=EventPayload(event_type="MoveStarted", data={"move_id": 1}).model_dump(),
+    )
+
+
+class TestEventRouting:
+    def test_event_reaches_the_attached_game(self):
+        connection = ServerConnection(SERVER_URL)
+        game = FakeRemoteGame()
+        connection.set_active_game(game)
+
+        connection._route(event_envelope())
+
+        assert len(game.events) == 1
+        assert game.events[0].event_type == "MoveStarted"
+        assert connection.inbox.empty()
+
+    def test_event_with_no_active_game_is_dropped_not_queued(self):
+        connection = ServerConnection(SERVER_URL)
+
+        connection._route(event_envelope())
+
+        assert connection.inbox.empty()

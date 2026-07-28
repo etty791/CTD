@@ -1,7 +1,20 @@
+from events.game_events import (
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
 from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType, State
 from model.position import Position
-from server.encoding import state_payload_from_snapshot
+from server.encoding import event_payload_from, state_payload_from_snapshot
+
+
+MOVE_START_MS = 1000
+MOVE_ARRIVAL_MS = 4000
+SNAPSHOT_CLOCK_MS = 2500
 
 
 MOVE_START_MS = 1000
@@ -88,3 +101,59 @@ class TestStatePayloadFromSnapshot:
         )
 
         assert payload.pieces == []
+
+
+class TestEventPayloadFrom:
+    def test_move_started(self):
+        payload = event_payload_from(
+            MoveStarted(move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0))
+        )
+        assert payload.event_type == "MoveStarted"
+        assert payload.data == {
+            "move_id": 1, "piece_id": 7,
+            "src": {"x": 6, "y": 0}, "dst": {"x": 5, "y": 0},
+        }
+
+    def test_move_completed(self):
+        payload = event_payload_from(
+            MoveCompleted(
+                move_id=1, piece_id=7, piece_type=PieceType.ROOK, color=Color.WHITE,
+                src=Position(6, 0), dst=Position(5, 0),
+            )
+        )
+        assert payload.event_type == "MoveCompleted"
+        assert payload.data["piece_type"] == "R"
+        assert payload.data["color"] == "w"
+
+    def test_move_truncated(self):
+        payload = event_payload_from(
+            MoveTruncated(move_id=1, piece_id=7, target=Position(4, 0), arrival_time_ms=1500)
+        )
+        assert payload.event_type == "MoveTruncated"
+        assert payload.data == {
+            "move_id": 1, "piece_id": 7,
+            "target": {"x": 4, "y": 0}, "arrival_time_ms": 1500,
+        }
+
+    def test_move_aborted(self):
+        payload = event_payload_from(MoveAborted(move_id=1, piece_id=7, position=Position(6, 0)))
+        assert payload.event_type == "MoveAborted"
+        assert payload.data == {"move_id": 1, "piece_id": 7, "position": {"x": 6, "y": 0}}
+
+    def test_piece_captured(self):
+        payload = event_payload_from(
+            PieceCaptured(
+                piece_id=3, piece_type=PieceType.PAWN, color=Color.BLACK,
+                position=Position(4, 0), capturing_move_id=2,
+            )
+        )
+        assert payload.event_type == "PieceCaptured"
+        assert payload.data == {
+            "piece_id": 3, "piece_type": "P", "color": "b",
+            "position": {"x": 4, "y": 0}, "capturing_move_id": 2,
+        }
+
+    def test_rest_ended(self):
+        payload = event_payload_from(RestEnded(piece_id=3, position=Position(4, 0)))
+        assert payload.event_type == "RestEnded"
+        assert payload.data == {"piece_id": 3, "position": {"x": 4, "y": 0}}

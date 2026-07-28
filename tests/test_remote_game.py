@@ -11,7 +11,17 @@ from client.remote_game import (
     RemoteGame,
     RemoteGameState,
 )
-from events.game_events import GameEnded, GameStarted
+from events.game_events import (
+    GameEnded,
+    GameStarted,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
+from server.encoding import event_payload_from
 from shared.messages import (
     GameOverPayload,
     JumpPayload,
@@ -270,6 +280,60 @@ class TestJumpRequest:
         assert not result.is_valid
         assert result.reason == OBSERVER_CANNOT_MOVE_REASON
         assert conn.sent == []
+
+
+class TestResign:
+    def test_player_sends_resign_envelope(self):
+        conn = FakeConnection()
+        game = RemoteGame(conn, is_observer=False)
+
+        game.resign()
+
+        assert len(conn.sent) == 1
+        envelope = conn.sent[0]
+        assert envelope.type == MessageType.RESIGN
+        assert envelope.payload == {}
+
+    def test_observer_sends_nothing(self):
+        conn = FakeConnection()
+        game = RemoteGame(conn, is_observer=True)
+
+        game.resign()
+
+        assert conn.sent == []
+
+
+class TestApplyEvent:
+    EVENTS = [
+        MoveStarted(move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0)),
+        MoveCompleted(
+            move_id=1, piece_id=7, piece_type=PieceType.ROOK, color=Color.WHITE,
+            src=Position(6, 0), dst=Position(5, 0),
+        ),
+        MoveTruncated(move_id=1, piece_id=7, target=Position(4, 0), arrival_time_ms=1500),
+        MoveAborted(move_id=1, piece_id=7, position=Position(6, 0)),
+        PieceCaptured(
+            piece_id=3, piece_type=PieceType.PAWN, color=Color.BLACK,
+            position=Position(4, 0), capturing_move_id=2,
+        ),
+        RestEnded(piece_id=3, position=Position(4, 0)),
+    ]
+
+    @pytest.mark.parametrize("event", EVENTS)
+    def test_round_trips_through_encode_apply(self, event):
+        game = RemoteGame(FakeConnection(), is_observer=False)
+        published = []
+        game.events.subscribe(type(event), published.append)
+
+        game.apply_event(event_payload_from(event))
+
+        assert published == [event]
+
+    def test_unknown_event_type_is_ignored_without_raising(self):
+        from shared.messages import EventPayload
+
+        game = RemoteGame(FakeConnection(), is_observer=False)
+        game.apply_event(EventPayload(event_type="SomeFutureEvent", data={}))
 
 
 class TestWait:

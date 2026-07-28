@@ -1,8 +1,8 @@
 import asyncio
 from concurrent.futures import Future
 
-from events.game_events import GameEnded
-from model.piece import Color
+from events.game_events import GameEnded, MoveStarted, PieceCaptured
+from model.piece import Color, PieceType
 from model.position import Position
 from real_time.real_time_config import DEFAULT_MOVE_DELAY_MS, LONG_REST_DURATION_MS
 from server.game_registry import GameRegistry
@@ -151,6 +151,68 @@ class TestBroadcastState:
 
         assert len(conn_b.sent) == 1
         assert len(obs_conn.sent) == 1
+
+
+def event_frames(conn: FakeConnection) -> list[Envelope]:
+    return [envelope for envelope in conn.sent if envelope.type == MessageType.EVENT]
+
+
+class TestForwardedEvents:
+    """FORWARDED_EVENTS (STATE_CHANGING_EVENTS minus GameEnded) each get
+    their own EVENT envelope, on top of (not instead of) the coalesced
+    STATE broadcast -- see server/game_session.py's _on_forwarded_event."""
+
+    async def test_move_started_broadcasts_an_event(self):
+        session, conn_a, conn_b = build_session()
+
+        session.engine.events.publish(
+            MoveStarted(move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0))
+        )
+        await flush_tasks()
+
+        for conn in (conn_a, conn_b):
+            events = event_frames(conn)
+            assert len(events) == 1
+            assert events[0].payload["event_type"] == "MoveStarted"
+            assert events[0].game_id == session.id
+
+    async def test_piece_captured_broadcasts_an_event(self):
+        session, conn_a, _ = build_session()
+
+        session.engine.events.publish(
+            PieceCaptured(
+                piece_id=3, piece_type=PieceType.PAWN, color=Color.BLACK,
+                position=Position(4, 0), capturing_move_id=2,
+            )
+        )
+        await flush_tasks()
+
+        assert event_frames(conn_a)[0].payload["event_type"] == "PieceCaptured"
+
+    async def test_game_ended_does_not_broadcast_an_event(self):
+        """GameEnded is carried by GAME_OVER via the finalize pipeline --
+        forwarding it again as a raw EVENT would be redundant."""
+        session, conn_a, _ = build_session()
+
+        session.engine.events.publish(GameEnded(Color.WHITE))
+        await flush_tasks()
+
+        assert event_frames(conn_a) == []
+
+    async def test_one_dead_recipient_does_not_blank_the_rest(self):
+        conn_a, conn_b = FailingConnection(), FakeConnection()
+        player_a = PlayerSession("white", conn_a)
+        player_b = PlayerSession("black", conn_b)
+        session = GameSession(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="room1",
+        )
+
+        session.engine.events.publish(
+            MoveStarted(move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0))
+        )
+        await flush_tasks()
+
+        assert len(event_frames(conn_b)) == 1
 
 
 class TestUsernameOfColor:

@@ -17,7 +17,7 @@ import time
 import websockets
 
 from client.client_config import RESPONSE_TIMEOUT_S
-from shared.messages import GameOverPayload, StatePayload
+from shared.messages import EventPayload, GameOverPayload, StatePayload
 from shared.protocol import Envelope, MessageType
 
 # wait_for polls the inbox in bounded slices rather than a single indefinite
@@ -83,6 +83,15 @@ class ServerConnection:
                 return
             # Defensive fallback: shouldn't happen (GAME_OVER always follows
             # an active game), but don't lose it silently if it does.
+        if envelope.type == MessageType.EVENT:
+            # Transient/cosmetic (a move-started/capture cue) -- unlike
+            # STATE, dropping one before a game attaches is harmless, so
+            # there's no pending-buffer equivalent. Must return
+            # unconditionally: falling through to inbox.put would let a
+            # dropped EVENT be misconsumed by an unrelated later wait_for.
+            if self._active_game is not None:
+                self._active_game.apply_event(EventPayload.model_validate(envelope.payload))
+            return
         self.inbox.put(envelope)
 
     def set_active_game(self, remote_game) -> None:

@@ -32,6 +32,8 @@ MSG_GOODBYE = "Goodbye."
 MSG_SEARCHING = "Searching for an opponent..."
 MSG_WAITING_FOR_OPPONENT = "Waiting for them to join... (Ctrl+C to cancel)"
 MSG_SEEK_CANCELLED = "Cancelled waiting (the room stays open server-side for now)."
+MSG_PLAY_QUEUED = "No immediate match -- queued, waiting for an opponent... (Ctrl+C to cancel)"
+MSG_PLAY_CANCELLED = "Cancelled search for an opponent."
 MSG_HELP_TEXT = (
     "Commands:\n"
     "  register            create an account\n"

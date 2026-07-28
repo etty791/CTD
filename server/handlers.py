@@ -18,7 +18,7 @@ from shared.messages import (
 )
 from shared.protocol import Envelope, MessageType
 from server.rooms import Room, RoomManager
-from server.async_clock import AsyncClock
+from server.async_clock import AsyncClock, TimerHandle
 from server.persistence.worker import PersistenceWorker
 from server.server_config import (
     ERROR_ACCOUNT_NOT_FOUND,
@@ -31,8 +31,10 @@ from server.server_config import (
     ERROR_NOT_YOUR_PIECE,
     ERROR_NO_MATCH_FOUND,
     ERROR_OBSERVER_CANNOT_MOVE,
+    ERROR_OBSERVER_CANNOT_RESIGN,
     ERROR_ROOM_NOT_FOUND,
     ERROR_USERNAME_TAKEN,
+    GAME_OVER_REASON_RESIGNATION,
     TICK_MS,
 )
 from shared.protocol_config import MATCH_TIMEOUT_MS, ROOM_STATUS_WAITING, Role, Status
@@ -44,6 +46,10 @@ room_manager = RoomManager()
 clock = AsyncClock(TICK_MS)
 persistence = PersistenceWorker()
 logged_in_usernames: set[str] = set()
+# player_id -> the TimerHandle for their queued play() match-timeout, so a
+# CANCEL_SEEK (or a match found the normal way) can cancel it instead of
+# letting it fire uselessly later.
+_pending_seek_timers: dict[str, TimerHandle] = {}
 
 
 # --- shared helpers (not registered as message handlers) -------------------
@@ -87,6 +93,7 @@ def _on_seek_timeout(session: PlayerSession) -> None:
     # Sync: AsyncClock.after's callback contract is Callable[[], None].
     # cancel_seek returns False (harmless no-op) if the session was already
     # matched and removed from the pool by the time this fires.
+    _pending_seek_timers.pop(session.player_id, None)
     if room_manager.cancel_seek(session):
         asyncio.create_task(session.connection.send_error(ERROR_NO_MATCH_FOUND))
 
@@ -279,7 +286,24 @@ async def handle_play(conn: Connection, envelope: Envelope) -> None:
         await _start_game_from_room(result.room)
         return
 
-    clock.after(MATCH_TIMEOUT_MS, lambda: _on_seek_timeout(session))
+    await conn.send(Envelope(type=MessageType.PLAY, payload={}))
+    _pending_seek_timers[session.player_id] = clock.after(
+        MATCH_TIMEOUT_MS, lambda: _on_seek_timeout(session)
+    )
+
+
+@register(MessageType.CANCEL_SEEK)
+async def handle_cancel_seek(conn: Connection, envelope: Envelope) -> None:
+    if conn.player_session is None:
+        await conn.send_error(ERROR_NOT_AUTHENTICATED)
+        return
+    session = conn.player_session
+
+    timer = _pending_seek_timers.pop(session.player_id, None)
+    if timer is not None:
+        timer.cancel()
+    room_manager.cancel_seek(session)
+    await conn.send(Envelope(type=MessageType.CANCEL_SEEK, payload={}))
 
 
 # --- in-game moves ---------------------------------------------------------
@@ -356,3 +380,24 @@ async def handle_jump(conn: Connection, envelope: Envelope) -> None:
         return
 
     await game.broadcast_state()
+
+
+@register(MessageType.RESIGN)
+async def handle_resign(conn: Connection, envelope: Envelope) -> None:
+    if conn.player_session is None:
+        await conn.send_error(ERROR_NOT_AUTHENTICATED)
+        return
+
+    player_id = conn.player_session.player_id
+    game = registry.get_game_for_player(player_id)
+    if game is None:
+        await conn.send_error(ERROR_NOT_IN_GAME)
+        return
+
+    if player_id not in game.color_of:
+        await conn.send_error(ERROR_OBSERVER_CANNOT_RESIGN)
+        return
+
+    opponent = game.opponent_of(player_id)
+    winner_color = game.color_of[opponent.player_id]
+    await game.finalize_by_forfeit(winner_color, GAME_OVER_REASON_RESIGNATION)

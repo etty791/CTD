@@ -15,6 +15,8 @@ from client.client_config import (
     MSG_GOODBYE,
     MSG_HELP_TEXT,
     MSG_NOT_LOGGED_IN,
+    MSG_PLAY_CANCELLED,
+    MSG_PLAY_QUEUED,
     MSG_SEARCHING,
     MSG_SEEK_CANCELLED,
     MSG_UNKNOWN_COMMAND,
@@ -112,10 +114,21 @@ class Shell:
         self.connection.send(Envelope(type=MessageType.PLAY, payload={}))
         print(MSG_SEARCHING)
         timeout = MATCH_TIMEOUT_MS / 1000 + MATCHMAKING_TIMEOUT_BUFFER_S
-        envelope = self.connection.wait_for({MessageType.GAME_START}, timeout)
+        envelope = self.connection.wait_for({MessageType.GAME_START, MessageType.PLAY}, timeout)
         if envelope.type == MessageType.ERROR:
             print(ErrorPayload.model_validate(envelope.payload).message)
             return
+        if envelope.type == MessageType.PLAY:
+            print(MSG_PLAY_QUEUED)
+            try:
+                envelope = self.connection.wait_for({MessageType.GAME_START}, timeout=None)
+            except KeyboardInterrupt:
+                self.connection.send(Envelope(type=MessageType.CANCEL_SEEK, payload={}))
+                print(MSG_PLAY_CANCELLED)
+                return
+            if envelope.type == MessageType.ERROR:
+                print(ErrorPayload.model_validate(envelope.payload).message)
+                return
         self._enter_game(envelope)
 
     def _cmd_room(self, args: str) -> None:

@@ -19,6 +19,8 @@ class MessageType(str, Enum):
     GAME_START = "game_start"
     GAME_OVER = "game_over"
     RESIGN = "resign"
+    CANCEL_SEEK = "cancel_seek"
+    EVENT = "event"
     CHAT = "chat"
     ERROR = "error"
 

@@ -34,6 +34,7 @@ class SceneAnimator:
         folder = SCENE_ASSET_FOLDER[self._scene]
         scene_asset = self._assets.get_scene(folder)
         if scene_asset is None or not scene_asset["sprites"]:
+            self._scene = NO_SCENE
             return None
 
         sprites = scene_asset["sprites"]
