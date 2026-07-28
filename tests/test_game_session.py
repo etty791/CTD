@@ -3,6 +3,8 @@ from concurrent.futures import Future
 
 from events.game_events import GameEnded
 from model.piece import Color
+from model.position import Position
+from real_time.real_time_config import DEFAULT_MOVE_DELAY_MS, LONG_REST_DURATION_MS
 from server.game_registry import GameRegistry
 from server.game_session import GameSession
 from server.persistence.user_repository import GameResultRatings
@@ -10,10 +12,20 @@ from shared.protocol import Envelope, MessageType
 from server.server_config import (
     GAME_OVER_REASON_DISCONNECT,
     GAME_OVER_REASON_KING_CAPTURED,
+    MAX_STATE_INTERVAL_MS,
+    TICK_MS,
 )
 from server.session import PlayerSession
 
-PIECE_KEYS = {"id", "position", "type", "color", "state", "origin", "target", "progress"}
+# A one-square white pawn push on the standard starting board.
+WHITE_PAWN_ORIGIN = Position(6, 0)
+WHITE_PAWN_TARGET = Position(5, 0)
+TICKS_WELL_WITHIN_HEARTBEAT = MAX_STATE_INTERVAL_MS // TICK_MS - 1
+
+PIECE_KEYS = {
+    "id", "position", "type", "color", "state", "origin", "target",
+    "move_start_ms", "move_arrival_ms",
+}
 
 
 class FakeConnection:
@@ -117,7 +129,7 @@ class TestBroadcastState:
             envelope = conn.sent[0]
             assert envelope.type == MessageType.STATE
             assert envelope.game_id == session.id
-            assert set(envelope.payload.keys()) == {"pieces", "scores"}
+            assert set(envelope.payload.keys()) == {"pieces", "scores", "server_time_ms"}
             assert len(envelope.payload["pieces"]) == 32
             for piece in envelope.payload["pieces"]:
                 assert set(piece.keys()) == PIECE_KEYS
@@ -158,6 +170,75 @@ class TestGameEndedIdempotency:
 
         assert len(persistence.submissions) == 1
         assert session._winner == Color.WHITE
+
+
+def state_frames(conn: FakeConnection) -> list[Envelope]:
+    return [envelope for envelope in conn.sent if envelope.type == MessageType.STATE]
+
+
+async def tick(clock: FakeClock, ms: int) -> None:
+    clock.callback(ms)
+    await flush_tasks()
+
+
+class TestEventDrivenBroadcast:
+    """STATE goes out when the engine says something changed, not per tick."""
+
+    async def test_idle_ticks_send_nothing(self):
+        clock = FakeClock()
+        session, conn_a, _ = build_session(clock=clock)
+        session.start_ticking()
+
+        for _ in range(TICKS_WELL_WITHIN_HEARTBEAT):
+            await tick(clock, TICK_MS)
+
+        assert state_frames(conn_a) == []
+
+    async def test_a_started_move_makes_the_next_tick_broadcast(self):
+        clock = FakeClock()
+        session, conn_a, _ = build_session(clock=clock)
+        session.start_ticking()
+        session.engine.move_request(WHITE_PAWN_ORIGIN, WHITE_PAWN_TARGET)
+
+        await tick(clock, TICK_MS)
+
+        assert len(state_frames(conn_a)) == 1
+
+    async def test_several_events_in_one_tick_cost_one_frame(self):
+        clock = FakeClock()
+        session, conn_a, _ = build_session(clock=clock)
+        session.start_ticking()
+        session.engine.move_request(WHITE_PAWN_ORIGIN, WHITE_PAWN_TARGET)
+        await tick(clock, TICK_MS)  # frame 1: the move started
+        frames_after_start = len(state_frames(conn_a))
+
+        # One tick long enough to both land the move and expire its rest:
+        # MoveCompleted + RestEnded, and still a single frame.
+        await tick(clock, DEFAULT_MOVE_DELAY_MS + LONG_REST_DURATION_MS)
+
+        assert len(state_frames(conn_a)) == frames_after_start + 1
+
+    async def test_a_quiet_board_still_gets_a_heartbeat_frame(self):
+        clock = FakeClock()
+        session, conn_a, _ = build_session(clock=clock)
+        session.start_ticking()
+
+        await tick(clock, MAX_STATE_INTERVAL_MS)
+
+        assert len(state_frames(conn_a)) == 1
+
+    async def test_an_out_of_band_broadcast_resets_the_heartbeat(self):
+        # handle_move/handle_jump echo state immediately; that must count as
+        # the heartbeat rather than leaving a duplicate queued for the tick.
+        clock = FakeClock()
+        session, conn_a, _ = build_session(clock=clock)
+        session.start_ticking()
+        await tick(clock, MAX_STATE_INTERVAL_MS - TICK_MS)
+
+        await session.broadcast_state()
+        await tick(clock, TICK_MS)
+
+        assert len(state_frames(conn_a)) == 1
 
 
 class TestOnTick:

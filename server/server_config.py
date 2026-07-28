@@ -28,6 +28,10 @@ ERROR_NO_MATCH_FOUND = "no opponent found"
 
 # --- Ticking / game-over reasons ---
 TICK_MS = 50
+# STATE frames are published on change, not on every tick. This is the
+# ceiling between two frames anyway: a resync heartbeat, so a dropped frame
+# or an unexpected desync heals within a second on an otherwise idle board.
+MAX_STATE_INTERVAL_MS = 1000
 GAME_OVER_REASON_KING_CAPTURED = "king_captured"
 GAME_OVER_REASON_DISCONNECT = "opponent_disconnected"
 # Same reason, surfaced on the RESIGN message a disconnect triggers.

@@ -5,6 +5,7 @@ from model.piece import Color, PieceType, State
 from model.position import Position
 from model.game_snapshot import PieceDTO
 from shared.messages import (
+    IDLE_PROGRESS,
     AuthAckPayload,
     AuthPayload,
     CredentialsPayload,
@@ -21,6 +22,10 @@ from shared.messages import (
 )
 
 
+MOVE_START_MS = 1000
+MOVE_ARRIVAL_MS = 4000
+
+
 def sample_piece_dto():
     return PieceDTO(
         id=1,
@@ -31,6 +36,8 @@ def sample_piece_dto():
         origin=Position(0, 0),
         target=Position(0, 3),
         progress=0.5,
+        move_start_ms=MOVE_START_MS,
+        move_arrival_ms=MOVE_ARRIVAL_MS,
     )
 
 
@@ -86,7 +93,8 @@ class TestPiecePayload:
             "state": "moving",
             "origin": {"x": 0, "y": 0},
             "target": {"x": 0, "y": 3},
-            "progress": 0.5,
+            "move_start_ms": MOVE_START_MS,
+            "move_arrival_ms": MOVE_ARRIVAL_MS,
         }
 
     def test_dto_round_trips_through_the_wire(self):
@@ -94,24 +102,45 @@ class TestPiecePayload:
 
         restored = PiecePayload.model_validate_json(
             PiecePayload.from_piece_dto(dto).model_dump_json()
-        ).to_piece_dto()
+        ).to_piece_dto(progress=dto.progress)
 
         assert restored == dto
         assert restored.type is PieceType.ROOK
         assert restored.color is Color.WHITE
         assert restored.state is State.moving
 
+    def test_progress_is_not_on_the_wire_and_defaults_to_idle(self):
+        # The sampled fraction is deliberately absent: the receiver derives it
+        # from the move times, which is what lets frames be sent on change.
+        restored = PiecePayload.from_piece_dto(sample_piece_dto()).to_piece_dto()
+
+        assert restored.progress == IDLE_PROGRESS
+
+    def test_resting_piece_has_no_move_times(self):
+        dto = sample_piece_dto()
+        dto.move_start_ms = None
+        dto.move_arrival_ms = None
+
+        payload = PiecePayload.from_piece_dto(dto)
+
+        assert payload.move_start_ms is None
+        assert payload.move_arrival_ms is None
+        assert payload.to_piece_dto().move_start_ms is None
+
 
 class TestStatePayload:
     def test_round_trips_through_json(self):
         payload = StatePayload(
-            pieces=[PiecePayload.from_piece_dto(sample_piece_dto())], scores={"w": 1, "b": 0}
+            pieces=[PiecePayload.from_piece_dto(sample_piece_dto())],
+            scores={"w": 1, "b": 0},
+            server_time_ms=2500,
         )
 
         restored = StatePayload.model_validate_json(payload.model_dump_json())
 
         assert restored == payload
-        assert set(payload.model_dump().keys()) == {"pieces", "scores"}
+        assert restored.server_time_ms == 2500
+        assert set(payload.model_dump().keys()) == {"pieces", "scores", "server_time_ms"}
 
 
 class TestCredentialsPayload:

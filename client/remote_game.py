@@ -8,7 +8,9 @@ Three surfaces are involved, and only two objects implement them:
   `GameSnapshot` the renderer consumes (`get_all_pieces` / `get_scores`) and
   as the piece index the board view queries, so a STATE payload is decoded
   once when it arrives on the network thread rather than once per rendered
-  frame.
+  frame. Only the animation progress of in-flight pieces is recomputed per
+  frame -- frames arrive on change, not on a timer, so the client is what
+  turns a move's start/arrival times into smooth motion.
 - `RemoteBoardView` is the read-only slice of `Board` that `Controller` needs
   (`is_within_boundaries` / `is_cell_empty` / `get_piece_at`). It holds no
   state of its own -- it reads whichever `RemoteGameState` is current.
@@ -18,7 +20,8 @@ Pieces are plain `PieceDTO`s throughout: the controller only ever reads
 """
 
 import threading
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from events.event_bus import EventBus
@@ -28,6 +31,7 @@ from model.game_snapshot import PieceDTO
 from model.piece import Color
 from model.position import Position
 from shared.messages import (
+    NO_SERVER_TIME_MS,
     GameOverPayload,
     JumpPayload,
     MovePayload,
@@ -35,11 +39,15 @@ from shared.messages import (
     StatePayload,
 )
 from shared.protocol import Envelope, MessageType
-from view.view_config import DEFAULT_BOARD_SIZE
+from view.view_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
 
 OBSERVER_CANNOT_MOVE_REASON = "observer_cannot_move"
 MOVE_OK_REASON = "ok"
 NO_SCORE = 0
+MOVE_NOT_STARTED = 0.0
+MOVE_FINISHED = 1.0
+# No frame has ever been received yet -- there is no "ago" to measure.
+NO_FRAME_RECEIVED_S = 0.0
 
 
 @dataclass(frozen=True)
@@ -55,29 +63,55 @@ class RemoteMoveResult:
 @dataclass(frozen=True)
 class RemoteGameState:
     """One decoded STATE frame. Immutable, so the network thread can swap a
-    fresh one in wholesale while the render thread reads the previous one."""
+    fresh one in wholesale while the render thread reads the previous one.
+
+    The server publishes frames on change rather than on a timer, so a frame
+    describes a moving piece by the absolute clock times its move spans, not
+    by a progress fraction that would freeze between frames. `get_all_pieces`
+    resolves those times against how long ago the frame landed, which is why
+    it renders smoothly at frame rate off a state that may be a full second
+    old. Latency shifts every piece by the same constant, so it needs no
+    clock synchronisation with the server."""
 
     pieces: tuple[PieceDTO, ...] = ()
     scores: dict[Color, int] = field(
         default_factory=lambda: {Color.WHITE: NO_SCORE, Color.BLACK: NO_SCORE}
     )
     by_position: dict[Position, PieceDTO] = field(default_factory=dict)
+    server_time_ms: int = NO_SERVER_TIME_MS
+    received_at_s: float = NO_FRAME_RECEIVED_S
 
     @classmethod
-    def from_payload(cls, payload: StatePayload) -> "RemoteGameState":
+    def from_payload(cls, payload: StatePayload, received_at_s: float | None = None) -> "RemoteGameState":
         pieces = tuple(piece.to_piece_dto() for piece in payload.pieces)
         return cls(
             pieces=pieces,
             scores={Color(color): score for color, score in payload.scores.items()},
             by_position={piece.position: piece for piece in pieces},
+            server_time_ms=payload.server_time_ms,
+            received_at_s=time.monotonic() if received_at_s is None else received_at_s,
         )
 
     # --- the GameSnapshot surface view/ renders from ---
-    def get_all_pieces(self) -> list[PieceDTO]:
-        return list(self.pieces)
+    def get_all_pieces(self, now_s: float | None = None) -> list[PieceDTO]:
+        now = time.monotonic() if now_s is None else now_s
+        return [replace(piece, progress=self._progress_of(piece, now)) for piece in self.pieces]
 
     def get_scores(self) -> dict[Color, int]:
         return dict(self.scores)
+
+    def _progress_of(self, piece: PieceDTO, now_s: float) -> float:
+        """How far `piece` is through its move as of `now_s`, clamped: a
+        piece whose arrival frame is still in flight parks on its target
+        square rather than sliding past it."""
+        if piece.move_start_ms is None or piece.move_arrival_ms is None:
+            return MOVE_NOT_STARTED
+        duration_ms = piece.move_arrival_ms - piece.move_start_ms
+        if duration_ms <= 0:
+            return MOVE_FINISHED
+        elapsed_ms = (now_s - self.received_at_s) * MS_PER_SECOND
+        travelled_ms = self.server_time_ms + elapsed_ms - piece.move_start_ms
+        return min(MOVE_FINISHED, max(MOVE_NOT_STARTED, travelled_ms / duration_ms))
 
 
 class RemoteBoardView:

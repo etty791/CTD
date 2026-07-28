@@ -5,6 +5,14 @@ Layering: GameSession must NOT know about GameRegistry or RoomManager. Registry
 and room cleanup are injected as the async `on_finalize` callback, invoked once
 at the very end of `_finalize`.
 
+Broadcasting is event-driven, not tick-driven: the engine still advances real
+time every TICK_MS (arrivals, path collisions and rest expiry all need it), but
+a STATE frame goes out only when one of STATE_CHANGING_EVENTS was published
+during that tick - every event in a tick coalescing into a single frame - or
+when MAX_STATE_INTERVAL_MS has passed without one. Clients interpolate moving
+pieces themselves from the absolute move times in the frame, so they do not
+need a fresh sample every tick to animate smoothly.
+
 End-of-game state machine (two idempotent gates):
 - `_ended`   — set the first time the game concludes (king capture via a
   GameEnded bus event, or a forfeit). Guards against GameEnded's *double*
@@ -20,7 +28,15 @@ from concurrent.futures import Future
 from typing import Awaitable, Callable, Optional
 
 from game_engine.game import KungFuChessGame
-from events.game_events import GameEnded
+from events.game_events import (
+    GameEnded,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
 from model.piece import Color
 from server.async_clock import AsyncClock, TimerHandle
 from server.encoding import state_payload_from_snapshot
@@ -30,12 +46,25 @@ from shared.messages import (
 )
 from server.persistence.worker import PersistenceWorker
 from shared.protocol import Envelope, MessageType
-from server.server_config import GAME_OVER_REASON_KING_CAPTURED
+from server.server_config import GAME_OVER_REASON_KING_CAPTURED, MAX_STATE_INTERVAL_MS
 from server.session import PlayerSession
 
 logger = logging.getLogger(__name__)
 
 FinalizeCallback = Callable[["GameSession"], Awaitable[None]]
+
+# Every event that makes the board look different to a client. The engine's
+# bus is the session's only notion of "something happened": a tick that
+# publishes none of these broadcasts nothing.
+STATE_CHANGING_EVENTS = (
+    MoveStarted,
+    MoveCompleted,
+    MoveTruncated,
+    MoveAborted,
+    PieceCaptured,
+    RestEnded,
+    GameEnded,
+)
 
 
 class GameSession:
@@ -53,6 +82,8 @@ class GameSession:
         # GameStarted already fired inside the engine's __init__; GameEnded fires
         # later inside engine.wait(), so subscribing here is safe (and needed).
         self.engine.events.subscribe(GameEnded, self._on_game_ended)
+        for event_type in STATE_CHANGING_EVENTS:
+            self.engine.events.subscribe(event_type, self._mark_dirty)
 
         self.players: dict[str, PlayerSession] = {
             player_a.player_id: player_a,
@@ -69,6 +100,8 @@ class GameSession:
         self._persistence = persistence
         self._on_finalize = on_finalize
 
+        self._dirty = False
+        self._ms_since_broadcast = 0
         self._ended = False
         self._finalized = False
         self._winner: Color | None = None
@@ -96,7 +129,23 @@ class GameSession:
 
     # --- broadcasting -----------------------------------------------------
 
+    def _mark_dirty(self, event) -> None:
+        """SYNC bus handler for every state-changing event. Deliberately does
+        nothing but raise the flag: several events routinely fire within one
+        tick (a capture is a MoveCompleted + PieceCaptured + ScoreChanged),
+        and they should cost exactly one frame between them."""
+        self._dirty = True
+
+    def _reset_broadcast_state(self) -> None:
+        self._dirty = False
+        self._ms_since_broadcast = 0
+
     async def broadcast_state(self) -> None:
+        # Reset up front, not after awaiting the sends: this doubles as the
+        # heartbeat reset for the out-of-band broadcasts (a move handler's
+        # immediate echo, the initial frame at game start), so they don't
+        # leave a redundant frame queued for the next tick.
+        self._reset_broadcast_state()
         state_payload = state_payload_from_snapshot(self.engine.get_snapshot())
         envelope = Envelope(
             type=MessageType.STATE,
@@ -115,9 +164,13 @@ class GameSession:
 
     def _on_tick(self, elapsed_ms: int) -> None:
         # Runs synchronously on the clock callback. engine.wait may publish
-        # GameEnded, which invokes _on_game_ended synchronously right here.
+        # GameEnded, which invokes _on_game_ended synchronously right here -
+        # as it does _mark_dirty for every state-changing event.
         self.engine.wait(elapsed_ms)
-        asyncio.create_task(self.broadcast_state())
+        self._ms_since_broadcast += elapsed_ms
+        if self._dirty or self._ms_since_broadcast >= MAX_STATE_INTERVAL_MS:
+            self._reset_broadcast_state()
+            asyncio.create_task(self.broadcast_state())
         if not self.engine.game_active:
             self.cancel_ticking()
             asyncio.create_task(self._finalize(GAME_OVER_REASON_KING_CAPTURED))

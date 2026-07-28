@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 Handler = Callable[[Any], None]
 
-
+#TODO: change to async
 class EventBus:
     """A minimal synchronous publish/subscribe dispatcher
     """

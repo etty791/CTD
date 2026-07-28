@@ -38,6 +38,7 @@ class ServerConnection:
         self._thread: threading.Thread | None = None
         self.inbox: "queue.Queue[Envelope]" = queue.Queue()
         self._active_game = None  # set by the shell right before/after a GUI session
+        self._pending_state: StatePayload | None = None  # a STATE that beat set_active_game
         self._ready = threading.Event()
 
     def start(self) -> None:
@@ -59,21 +60,22 @@ class ServerConnection:
                 self._route(envelope)
 
     def _route(self, envelope: Envelope) -> None:
-        # Design decision: a STATE envelope that arrives while no RemoteGame
-        # is active yet is silently dropped, never queued. There's an
-        # unavoidable race where the server can send GAME_START then
-        # immediately STATE (e.g. an observer joining a live game, or the
-        # second player's join completing the room) faster than the main
-        # thread can process wait_for's GAME_START return and call
-        # set_active_game. Rather than building cross-thread synchronization
-        # to close that race, we accept losing a stray STATE frame or two --
-        # the game is already ticking server-side, so a fresh STATE arrives
-        # within TICK_MS (50ms) regardless. Queuing and replaying dropped
-        # STATE frames would be unnecessary complexity for an imperceptible
-        # race.
+        # A STATE envelope can arrive before a RemoteGame exists to receive
+        # it: the server sends GAME_START then immediately STATE (an observer
+        # joining a live game, or the second player's join completing the
+        # room) faster than the main thread can process wait_for's GAME_START
+        # return and call set_active_game. Rather than synchronizing across
+        # the threads, the newest such frame is held here and handed to the
+        # game the moment it attaches. It cannot simply be dropped: the
+        # server publishes STATE on change, so on a quiet board the next one
+        # may be a full heartbeat away and the player would stare at an empty
+        # board until someone moved.
         if envelope.type == MessageType.STATE:
-            if self._active_game is not None:
-                self._active_game.apply_state(StatePayload.model_validate(envelope.payload))
+            state = StatePayload.model_validate(envelope.payload)
+            if self._active_game is None:
+                self._pending_state = state
+            else:
+                self._active_game.apply_state(state)
             return
         if envelope.type == MessageType.GAME_OVER:
             if self._active_game is not None:
@@ -84,7 +86,13 @@ class ServerConnection:
         self.inbox.put(envelope)
 
     def set_active_game(self, remote_game) -> None:
+        """Attach (or, with None, detach) the game inbound STATE frames feed.
+        A frame that beat the attachment is replayed here so the board is
+        populated from the very first rendered frame."""
         self._active_game = remote_game
+        pending, self._pending_state = self._pending_state, None
+        if remote_game is not None and pending is not None:
+            remote_game.apply_state(pending)
 
     def send(self, envelope: Envelope) -> None:
         asyncio.run_coroutine_threadsafe(self._ws.send(envelope.model_dump_json()), self._loop)

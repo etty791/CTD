@@ -16,6 +16,11 @@ from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType, State
 from model.position import Position
 
+# A piece that is not mid-move has made no progress through one.
+IDLE_PROGRESS = 0.0
+# Sentinel for a StatePayload built before any real clock reading is known.
+NO_SERVER_TIME_MS = 0
+
 
 class PositionPayload(BaseModel):
     x: int = Field(ge=0, lt=BOARD_SIZE)
@@ -93,6 +98,15 @@ class GameOverPayload(BaseModel):
 
 
 class PiecePayload(BaseModel):
+    """One piece as seen on the wire.
+
+    A moving piece carries the absolute start/arrival times of its move
+    rather than a sampled progress fraction: state frames are published on
+    change, not on a timer, so the receiver interpolates the motion itself
+    against StatePayload.server_time_ms. Both are None for a piece at rest,
+    where origin == target == position.
+    """
+
     id: int
     position: PositionPayload
     type: str
@@ -100,7 +114,8 @@ class PiecePayload(BaseModel):
     state: str
     origin: PositionPayload
     target: PositionPayload
-    progress: float
+    move_start_ms: int | None = None
+    move_arrival_ms: int | None = None
 
     @classmethod
     def from_piece_dto(cls, piece: PieceDTO) -> "PiecePayload":
@@ -112,10 +127,13 @@ class PiecePayload(BaseModel):
             state=piece.state.value,
             origin=PositionPayload.from_position(piece.origin),
             target=PositionPayload.from_position(piece.target),
-            progress=piece.progress,
+            move_start_ms=piece.move_start_ms,
+            move_arrival_ms=piece.move_arrival_ms,
         )
 
-    def to_piece_dto(self) -> PieceDTO:
+    def to_piece_dto(self, progress: float = IDLE_PROGRESS) -> PieceDTO:
+        """`progress` is supplied by the caller, which alone knows how much
+        time has passed since the frame was encoded."""
         return PieceDTO(
             id=self.id,
             position=self.position.to_position(),
@@ -124,10 +142,15 @@ class PiecePayload(BaseModel):
             state=State(self.state),
             origin=self.origin.to_position(),
             target=self.target.to_position(),
-            progress=self.progress,
+            progress=progress,
+            move_start_ms=self.move_start_ms,
+            move_arrival_ms=self.move_arrival_ms,
         )
 
 
 class StatePayload(BaseModel):
     pieces: List[PiecePayload]
     scores: Dict[str, int]
+    # The sender's game clock when this frame was encoded; the timebase every
+    # piece's move_start_ms/move_arrival_ms is expressed in.
+    server_time_ms: int = NO_SERVER_TIME_MS
