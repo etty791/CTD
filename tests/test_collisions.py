@@ -821,6 +821,76 @@ class TestKingCaptureDetection:
         assert result is True  # King capture detected
 
 
+class TestArrivalRaceKingCapture:
+    """A king that loses a same-tick arrival race in _resolve_collision
+    (rather than _resolve_path_collisions) must still end the game. This
+    route is reached when a piece's target only becomes contested by a
+    second move issued *after* the first is already in flight and outside
+    its airborne window, so _resolve_path_collisions never claims the pair
+    and both moves survive to arrive together."""
+
+    def test_king_loses_arrival_race_ends_game(self):
+        b = make_board(8, 8)
+        pawn = place(b, "WHITE", "P", 4, 4)
+        king = place(b, "BLACK", "K", 3, 4)
+        arb = RealTimeArbiter(b)
+        arb.add_jump(pawn, pos(4, 4))
+        arb.advance_time(500)
+        arb.add_move(king, pos(3, 4), pos(4, 4))
+        result = arb.advance_time(1000)
+        assert result is True
+        assert king.state == State.captured
+
+    def test_white_king_loses_arrival_race_ends_game(self):
+        """Mirrors test_king_loses_arrival_race_ends_game with colors
+        swapped."""
+        b = make_board(8, 8)
+        pawn = place(b, "BLACK", "P", 4, 4)
+        king = place(b, "WHITE", "K", 3, 4)
+        arb = RealTimeArbiter(b)
+        arb.add_jump(pawn, pos(4, 4))
+        arb.advance_time(500)
+        arb.add_move(king, pos(3, 4), pos(4, 4))
+        result = arb.advance_time(1000)
+        assert result is True
+        assert king.state == State.captured
+
+    def test_non_king_loses_arrival_race_does_not_end_game(self):
+        """Same shape as the king scenario, but the loser is a pawn: the
+        game must not be reported over."""
+        b = make_board(8, 8)
+        pawn_a = place(b, "WHITE", "P", 4, 4)
+        pawn_b = place(b, "BLACK", "P", 3, 4)
+        arb = RealTimeArbiter(b)
+        arb.add_jump(pawn_a, pos(4, 4))
+        arb.advance_time(500)
+        arb.add_move(pawn_b, pos(3, 4), pos(4, 4))
+        result = arb.advance_time(1000)
+        assert result is False
+        assert pawn_b.state == State.captured
+
+    def test_king_arrival_race_loss_does_not_strand_unrelated_move(self):
+        """The short-circuited `king_captured or self._resolve_x(...)` form
+        in advance_time would skip resolving any move grouped after the one
+        that captures a king in the same tick, leaving its piece stuck in
+        State.moving forever. Here an unrelated rook move arrives in the
+        same advance_time call as the king's arrival-race loss and must
+        still be applied (and start resting) rather than left mid-flight."""
+        b = make_board(8, 8)
+        pawn = place(b, "WHITE", "P", 4, 4)
+        king = place(b, "BLACK", "K", 3, 4)
+        rook = place(b, "WHITE", "R", 0, 0)
+        arb = RealTimeArbiter(b)
+        arb.add_jump(pawn, pos(4, 4))
+        arb.add_move(rook, pos(0, 0), pos(0, 1))
+        arb.advance_time(500)
+        arb.add_move(king, pos(3, 4), pos(4, 4))
+        result = arb.advance_time(1000)
+        assert result is True
+        assert rook.state.is_resting()
+        assert rook.position == pos(0, 1)
+
+
 # ---------------------------------------------------------------------------
 # TIMING AND ARRIVAL EDGE CASES
 # ---------------------------------------------------------------------------

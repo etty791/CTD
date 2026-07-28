@@ -8,7 +8,15 @@ from rules.rules_engine import validate_move
 from model.position import Position
 from real_time.real_time_config import *
 from events.event_bus import EventBus
-from events.game_events import GameEnded, MoveCompleted, MoveStarted, PieceCaptured
+from events.game_events import (
+    GameEnded,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
 
 REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
@@ -160,9 +168,9 @@ class RealTimeArbiter:
         arrived = self._pop_arrived_moves()
         for target, moves in self._group_by_target(arrived).items():
             if len(moves) > 1:
-                king_captured = king_captured or self._resolve_collision(moves, target)
+                king_captured = self._resolve_collision(moves, target) or king_captured
             else:
-                king_captured = king_captured or self._resolve_single(moves[0])
+                king_captured = self._resolve_single(moves[0]) or king_captured
         self._release_expired_rests()
         return king_captured
 
@@ -192,9 +200,23 @@ class RealTimeArbiter:
                 continue
             if entry.rest_until_ms <= self.clock:
                 entry.piece.state = State.idle
+                self._publish(RestEnded(entry.piece.id, entry.piece.position))
             else:
                 still_resting.append(entry)
         self._resting = still_resting
+
+    def _abort_move(self, move) -> None:
+        """End a move that never took its piece anywhere: the piece rests
+        where it already stands and no MoveCompleted is published. Shared by
+        every abort site (blocked before its first step, losing a same-color
+        arrival race, or failing revalidation on arrival) so subscribers see
+        exactly one event shape for 'this move is over, nothing moved'."""
+        if move.piece.state == State.captured:
+            # Already destroyed (and already announced via PieceCaptured):
+            # there is no resting piece left to report.
+            return
+        self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+        self._publish(MoveAborted(move.move_id, move.piece.id, move.origin))
 
     # ------------------------------------------------------------------
     # Rules 2 & 3: temporal path-collision detection
@@ -298,23 +320,33 @@ class RealTimeArbiter:
             _, kind, payload = outcome
             if kind == _CollisionOutcome.CAPTURE:
                 path, cell, capturing_move_id = payload
-                if move.piece.type == PieceType.KING:
-                    king_captured = True
-                    self._publish(GameEnded(_opposite_color(move.piece.color)))
-                self._capture_in_flight(move, capturing_move_id)
+                king_captured = self._capture_in_flight(move, capturing_move_id) or king_captured
             else:
                 path, cell = payload
                 self._truncate_move(move, path, cell)
         return king_captured
 
-    def _capture_in_flight(self, move, capturing_move_id):
-        """A piece is destroyed mid-transit by an opposite-color piece
-        that reaches their shared square later than it does."""
+    def _destroy_in_transit(self, move, capturing_move_id) -> bool:
+        """Destroy a piece that lost a race for a shared square while still
+        mid-flight. Returns True if it was a king (publishing GameEnded for
+        the surviving side), so every caller propagates game-over
+        identically. Does not touch pending_moves - callers differ on
+        whether the move is still in that list."""
         move.piece.state = State.captured
         self._record_capture(move.piece, capturing_move_id)
         if self.board.get_piece_at(move.origin) == move.piece:
             self.board.set_piece_at(move.origin, EMPTY_CELL)
+        if move.piece.type == PieceType.KING:
+            self._publish(GameEnded(_opposite_color(move.piece.color)))
+            return True
+        return False
+
+    def _capture_in_flight(self, move, capturing_move_id) -> bool:
+        """A piece is destroyed mid-transit by an opposite-color piece
+        that reaches their shared square later than it does."""
+        king_captured = self._destroy_in_transit(move, capturing_move_id)
         self.pending_moves.remove(move)
+        return king_captured
 
     def _truncate_move(self, move, path, collision_cell):
         """A piece is blocked by its own color: it stops one square short
@@ -331,8 +363,12 @@ class RealTimeArbiter:
             # rests rather than staying in State.moving toward its own
             # square. arrival_time was just reset to start_time above, so
             # the rest anchors there.
-            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+            self._abort_move(move)
             self.pending_moves.remove(move)
+            return
+        self._publish(MoveTruncated(
+            move.move_id, move.piece.id, move.target, move.arrival_time,
+        ))
 
     # ------------------------------------------------------------------
     # Arrival handling
@@ -362,32 +398,30 @@ class RealTimeArbiter:
         moves.sort(key=lambda m: m.arrival_time)
         winner = moves[0]
         losers = moves[1:]
+        king_captured = False
         for m in losers:
             if m.piece.color == winner.piece.color:
                 # Same-color pieces can't capture one another - it simply
                 # never lands on the contested square, same as a blocked
                 # move elsewhere.
-                self._begin_rest(m.piece, State.long_rest, m.arrival_time)
+                self._abort_move(m)
                 continue
-            m.piece.state = State.captured
-            self._record_capture(m.piece, winner.move_id)
-            if self.board.get_piece_at(m.origin) == m.piece:
-                self.board.set_piece_at(m.origin, EMPTY_CELL)
+            king_captured = self._destroy_in_transit(m, winner.move_id) or king_captured
         # The winner still needs to be validated - e.g. it could turn out
         # to be a friendly-fire "capture" on the target square, or its path
         # could have become illegal in the meantime. _resolve_single already
         # does this check for the single-mover case; do it here too.
         if not self._is_still_valid(winner):
-            self._begin_rest(winner.piece, State.long_rest, winner.arrival_time)
-            return False
-        return self._apply_move(winner)
+            self._abort_move(winner)
+            return king_captured
+        return self._apply_move(winner) or king_captured
 
     def _resolve_single(self, move):
 
         if move.origin != move.target and not self._is_still_valid(move):
             # The move never happened - don't leave the piece stuck
             # thinking it's still mid-move.
-            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+            self._abort_move(move)
             return False
         return self._apply_move(move)
 
