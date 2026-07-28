@@ -49,14 +49,31 @@ def test_move_piece():
     assert piece.position == Position(3, 0)
 
 def test_move_piece_captures_enemy():
+    # Board.move_piece no longer marks a displaced occupant as captured -
+    # that bookkeeping is centralized in RealTimeArbiter._mark_captured.
+    # move_piece just overwrites whatever was on the destination cell.
     board = make_empty_board()
     attacker = make_piece("WHITE", "ROOK", 0, 0)
     defender = make_piece("BLACK", "PAWN", 0, 5)
     board.set_piece_at(Position(0, 0), attacker)
     board.set_piece_at(Position(0, 5), defender)
     board.move_piece(Position(0, 0), Position(0, 5))
-    assert defender.state == State.captured
+    assert defender.state != State.captured
     assert board.get_piece_at(Position(0, 5)) is attacker
+
+def test_place_piece_sets_cell_and_position():
+    board = make_empty_board()
+    piece = make_piece("WHITE", "ROOK", 0, 0)
+    board.place_piece(Position(4, 4), piece)
+    assert board.get_piece_at(Position(4, 4)) is piece
+    assert piece.position == Position(4, 4)
+
+def test_place_piece_applies_promotion():
+    board = make_empty_board()
+    pawn = make_piece("WHITE", "PAWN", 1, 0)
+    board.place_piece(Position(0, 0), pawn)
+    assert pawn.type == PieceType.QUEEN
+    assert board.get_piece_at(Position(0, 0)) is pawn
 
 def test_is_friendly():
     board = make_empty_board()

@@ -237,9 +237,14 @@ class TestFriendlyPathCollision:
         assert b.get_piece_at(pos(0, 0)) != wr2
 
     def test_friendly_winner_unaffected(self):
-        """wr1 arrives at their shared cell later (it has further to travel)
-        and is truncated; wr2 — the one with the shorter remaining
-        distance — is unaffected and reaches its own target."""
+        """The single collision pass truncates wr1 to col 2 (its own path
+        crosses wr2's original planned path there); wr2's path was never
+        assigned a fate by that same pass. But by the time wr2's move
+        comes up for arrival revalidation, wr1 has already landed at col 2
+        — squarely inside wr2's own path back to col 0 — so wr2 discovers
+        it on arrival and, having already vacated its own origin, retreats
+        to the nearest free square short of it, col 1, rather than
+        reaching col 0."""
         b = make_board(1, 6)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 5)
@@ -248,7 +253,10 @@ class TestFriendlyPathCollision:
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 5), pos(0, 0))
         arb.advance_time(5 * D + REST)
-        assert b.get_piece_at(pos(0, 5)) == wr2
+        assert wr1.state == State.idle
+        assert wr1.position == pos(0, 2)
+        assert wr2.state == State.idle
+        assert wr2.position == pos(0, 1)
 
     def test_two_friendlies_non_crossing_both_arrive(self):
         """Friendly pieces on non-overlapping paths both complete their moves."""
@@ -499,8 +507,11 @@ class TestFriendlyCollisionsEdgeCases:
     def test_friendly_truncated_stops_at_cell_before_collision(self):
         """Given time for both moves to fully resolve: wr1 is truncated and
         stops one cell short of the shared cell (col 4). wr2, though never
-        truncated itself, finds wr1 now resting in the middle of its own
-        path back to col 0 and so never reaches its target either."""
+        assigned a fate by the collision pass itself, finds wr1 already
+        resting in the middle of its own path back to col 0 when its move
+        comes up for arrival revalidation — and, having already vacated
+        col 9, it does not return there either: it retreats to the
+        nearest free square short of wr1, col 1."""
         b = make_board(1, 10)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 9)
@@ -512,24 +523,24 @@ class TestFriendlyCollisionsEdgeCases:
         assert wr1.state == State.idle
         assert wr1.position == pos(0, 4)
         assert wr2.state == State.idle
-        assert wr2.position == pos(0, 9)
+        assert wr2.position == pos(0, 1)
 
-    def test_friendly_first_step_blocked_move_cancelled(self):
-        """wr2's target (0,0) is wr1's own origin square. wr1's move to
-        (0,4) hasn't landed yet (the board only updates on arrival), so
-        when wr2's short move arrives first, it finds a friendly piece
-        still sitting on its target and the move is cancelled outright —
-        wr2 never leaves (0,1)."""
+    def test_friendly_move_lands_on_vacated_origin(self):
+        """wr2's target (0,0) is wr1's own origin square, but a mover
+        vacates its origin the instant its first step completes — well
+        before wr2's own single-square move arrives — so wr2 finds (0,0)
+        empty and lands there normally."""
         b = make_board(1, 5)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 1)
         arb = RealTimeArbiter(b)
         arb.add_move(wr1, pos(0, 0), pos(0, 4))
         arb.advance_time(1)
-        arb.add_move(wr2, pos(0, 1), pos(0, 0))  # wr2's target (0,0) is still occupied by wr1
+        arb.add_move(wr2, pos(0, 1), pos(0, 0))  # wr1 has already vacated (0,0) by the time this lands
         arb.advance_time(D + REST)
         assert wr2.state == State.idle
-        assert wr2.position == pos(0, 1)
+        assert wr2.position == pos(0, 0)
+        assert b.get_piece_at(pos(0, 0)) == wr2
 
     def test_friendly_three_pieces_cascading_blocks(self):
         """Three friendly pieces where middle blocks the trailing one."""
@@ -550,9 +561,11 @@ class TestFriendlyCollisionsEdgeCases:
     def test_friendly_diagonal_collision(self):
         """Two friendly bishops colliding on a diagonal: wb1 has the
         longer remaining distance to their shared cell, so it's truncated
-        (stopping mid-diagonal). wb1 then comes to rest inside wb2's own
-        path, so wb2 in turn never reaches its target either — it ends up
-        idle back at its own origin."""
+        (stopping mid-diagonal, at (3,3)). wb1 then comes to rest inside
+        wb2's own path, so wb2 discovers it on arrival revalidation and —
+        having already vacated (7,7) — retreats to the nearest free
+        square short of wb1 along its own diagonal, (1,1), rather than
+        reaching (0,0) or returning to its own origin."""
         b = make_board(8, 8)
         wb1 = place(b, "WHITE", "B", 0, 0)
         wb2 = place(b, "WHITE", "B", 7, 7)
@@ -561,14 +574,18 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wb2, pos(7, 7), pos(0, 0))
         arb.advance_time(7 * D + REST)
+        assert wb1.state == State.idle
+        assert wb1.position == pos(3, 3)
         assert wb2.state == State.idle
-        assert b.get_piece_at(pos(7, 7)) == wb2
+        assert wb2.position == pos(1, 1)
 
     def test_friendly_vertical_collision(self):
         """Two friendly rooks colliding vertically: wr1 has the longer
-        remaining distance and is truncated mid-path; once it lands there
-        it blocks wr2's own return trip, so wr2 never reaches its target
-        either and ends up idle back at its own origin."""
+        remaining distance and is truncated mid-path, landing at (3,0);
+        once it lands there it blocks wr2's own return trip, so wr2
+        discovers it on arrival revalidation and — having already vacated
+        (7,0) — retreats to the nearest free square short of it, (1,0),
+        rather than reaching (0,0) or returning to its own origin."""
         b = make_board(8, 1)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 7, 0)
@@ -577,8 +594,10 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wr2, pos(7, 0), pos(0, 0))
         arb.advance_time(7 * D + REST)
+        assert wr1.state == State.idle
+        assert wr1.position == pos(3, 0)
         assert wr2.state == State.idle
-        assert b.get_piece_at(pos(7, 0)) == wr2
+        assert wr2.position == pos(1, 0)
 
     def test_friendly_two_non_overlapping_paths_both_complete(self):
         """Friendly pieces on completely separate paths complete normally."""
@@ -604,11 +623,14 @@ class TestFriendlyCollisionsEdgeCases:
         assert b.get_piece_at(pos(0, 9)) == wr1
         assert b.get_piece_at(pos(1, 9)) == wr2
 
-    def test_friendly_blocked_piece_stays_at_origin(self):
+    def test_friendly_blocked_piece_retreats_short_of_blocker(self):
         """wr2 has the shorter remaining distance to their shared cell and
-        wins that exchange (wr1 is truncated instead) — but wr1's
-        truncated stop lands squarely in wr2's own path, so it's wr1,
-        not wr2, that ends up permanently blocked at its starting square."""
+        wins that exchange (wr2 is truncated one cell short, at col 3,
+        while wr1's own path is never assigned a fate by the collision
+        pass itself). wr1 then discovers on arrival revalidation that wr2
+        has already landed at col 3, squarely inside its own path — and,
+        having already vacated col 0, it does not return there either: it
+        retreats to the nearest free square short of wr2, col 2."""
         b = make_board(1, 5)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 4)
@@ -618,7 +640,7 @@ class TestFriendlyCollisionsEdgeCases:
         arb.add_move(wr2, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * D + REST)
         assert wr1.state == State.idle
-        assert wr1.position == pos(0, 0)
+        assert wr1.position == pos(0, 2)
         assert wr2.state == State.idle
         assert wr2.position == pos(0, 3)
 

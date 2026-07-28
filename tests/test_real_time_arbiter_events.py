@@ -2,8 +2,17 @@ from model.board import Board
 from model.piece import Piece, State, Color
 from model.position import Position
 from events.event_bus import EventBus
-from events.game_events import GameEnded, MoveCompleted, MoveStarted, PieceCaptured
+from events.game_events import (
+    GameEnded,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
+from real_time.real_time_config import LONG_REST_DURATION_MS, SHORT_REST_DURATION_MS
 
 EMPTY = "."
 
@@ -137,6 +146,155 @@ class TestGameEnded:
         arb.add_move(rook, pos(0, 0), pos(0, 3))
         arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
         assert received == []
+
+
+class TestMoveTruncated:
+    """A move shortened by a same-color blocker is still in flight -- but
+    toward a nearer square, arriving sooner."""
+
+    def test_blocked_move_publishes_its_new_target_and_arrival(self):
+        b = empty_board()
+        place(b, "WHITE", "ROOK", 0, 0)          # crosses column 3 at t=3000
+        late = place(b, "WHITE", "ROOK", 5, 3)   # reaches column 3's row 0 at t=5000
+        bus = EventBus()
+        received = []
+        bus.subscribe(MoveTruncated, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(b.get_piece_at(pos(0, 0)), pos(0, 0), pos(0, 5))
+        arb.add_move(late, pos(5, 3), pos(0, 3))
+
+        arb.advance_time(1)
+
+        assert received == [
+            MoveTruncated(2, late.id, pos(1, 3), 4 * DEFAULT_MOVE_DELAY_MS)
+        ]
+
+    def test_unobstructed_move_publishes_nothing(self):
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        bus = EventBus()
+        received = []
+        bus.subscribe(MoveTruncated, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 3))
+
+        arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
+
+        assert received == []
+
+
+class TestMoveAborted:
+    """A move that ends without the piece ever reaching a new cell."""
+
+    def test_move_invalidated_by_arrival_time_publishes_aborted(self):
+        # A one-square move's vacate time equals its arrival time, so the
+        # "nearest free square walking backwards from target" retreat
+        # lands it right back on its own origin - the observable result is
+        # identical to the old MoveAborted-at-origin behavior, but per the
+        # vacate rule it is still a "vacated piece that failed
+        # revalidation", so the event fired is MoveTruncated(target=origin).
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        place(b, "WHITE", "PAWN", 0, 1)  # own piece on the (one-square) target
+        bus = EventBus()
+        aborted = []
+        truncated = []
+        bus.subscribe(MoveAborted, aborted.append)
+        bus.subscribe(MoveTruncated, truncated.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 1))
+
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)
+
+        assert aborted == []
+        assert truncated == [MoveTruncated(1, rook.id, pos(0, 0), arb.clock)]
+        assert b.get_piece_at(pos(0, 0)) is rook
+
+    def test_multi_square_invalidation_publishes_truncated_not_aborted(self):
+        # A multi-square move has already vacated its origin by the time
+        # it arrives, so per the vacate-on-move rule it never returns
+        # there: this now degenerates to a MoveTruncated at the nearest
+        # free square walking backwards from the target, not a MoveAborted.
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        place(b, "WHITE", "PAWN", 0, 3)  # own piece on the target square
+        bus = EventBus()
+        aborted = []
+        truncated = []
+        bus.subscribe(MoveAborted, aborted.append)
+        bus.subscribe(MoveTruncated, truncated.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 3))
+
+        arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
+
+        assert aborted == []
+        assert truncated == [MoveTruncated(1, rook.id, pos(0, 2), arb.clock)]
+        assert b.get_piece_at(pos(0, 2)) is rook
+
+    def test_move_blocked_before_its_first_step_publishes_aborted(self):
+        # Both rooks want the same square and would reach it at the same
+        # instant, one step in: neither can take even that step.
+        b = empty_board()
+        left = place(b, "WHITE", "ROOK", 0, 0)
+        right = place(b, "WHITE", "ROOK", 0, 2)
+        bus = EventBus()
+        received = []
+        bus.subscribe(MoveAborted, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(left, pos(0, 0), pos(0, 3))
+        arb.add_move(right, pos(0, 2), pos(0, 1))
+
+        arb.advance_time(1)
+
+        assert {(e.piece_id, e.position) for e in received} == {
+            (left.id, pos(0, 0)),
+            (right.id, pos(0, 2)),
+        }
+
+    def test_completed_move_publishes_nothing(self):
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        bus = EventBus()
+        received = []
+        bus.subscribe(MoveAborted, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 3))
+
+        arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
+
+        assert received == []
+
+
+class TestRestEnded:
+    def test_long_rest_expiry_publishes_rest_ended_at_the_new_square(self):
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        bus = EventBus()
+        received = []
+        bus.subscribe(RestEnded, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 1))
+
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)
+        assert received == []  # arrived, but still resting
+
+        arb.advance_time(LONG_REST_DURATION_MS)
+
+        assert received == [RestEnded(rook.id, pos(0, 1))]
+
+    def test_jump_publishes_rest_ended_after_the_short_rest(self):
+        b = empty_board()
+        knight = place(b, "WHITE", "KNIGHT", 4, 4)
+        bus = EventBus()
+        received = []
+        bus.subscribe(RestEnded, received.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_jump(knight, pos(4, 4))
+
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS + SHORT_REST_DURATION_MS)
+
+        assert received == [RestEnded(knight.id, pos(4, 4))]
 
 
 class TestNoEventBus:

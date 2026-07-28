@@ -3,6 +3,8 @@ from unittest.mock import MagicMock
 from model.board import Board
 from model.piece import Piece, PieceType, State, Color
 from model.position import Position
+from events.event_bus import EventBus
+from events.game_events import PieceCaptured
 from real_time.real_time_arbiter import (
     RealTimeArbiter,
     DEFAULT_MOVE_DELAY_MS,
@@ -81,8 +83,11 @@ class TestAdvanceTime:
         rook = place(b, "WHITE", "ROOK", 0, 0)
         arb = RealTimeArbiter(b)
         arb.add_move(rook, pos(0, 0), pos(0, 3))
-        arb.advance_time(DEFAULT_MOVE_DELAY_MS)  # only 1ms worth, needs 3
-        assert b.get_piece_at(pos(0, 0)) == rook
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)  # only 1 step worth, needs 3
+        # Past its first step, the rook has vacated its origin (it is
+        # in-flight, tracked via pending_moves/snapshot, not the board)
+        # but has not arrived at its target either.
+        assert b.get_piece_at(pos(0, 0)) == EMPTY
         assert b.get_piece_at(pos(0, 3)) == EMPTY
 
     def test_move_applied_at_arrival(self):
@@ -264,7 +269,12 @@ class TestIsStillValid:
         place(b, "WHITE", "PAWN", 0, 3)
         rook.state = State.moving
         arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
-        assert b.get_piece_at(pos(0, 0)) == rook  # rook stays
+        # The rook vacated (0, 0) long before arrival and, per the
+        # vacate-on-move rule, never returns there: it retreats to the
+        # nearest free square walking backwards from its target along its
+        # own path, which is (0, 2).
+        assert b.get_piece_at(pos(0, 0)) == EMPTY
+        assert b.get_piece_at(pos(0, 2)) == rook
 
     def test_move_invalidated_if_piece_captured(self):
         b = empty_board()
@@ -306,7 +316,11 @@ class TestMultipleMoves:
         arb.add_move(rook2, pos(7, 0), pos(7, 5))  # arrives at 5000ms
         arb.advance_time(2 * DEFAULT_MOVE_DELAY_MS)
         assert b.get_piece_at(pos(0, 2)) == rook1
-        assert b.get_piece_at(pos(7, 0)) == rook2  # not yet arrived
+        # rook2 is only 2 of its 5 steps in - not yet arrived, and past
+        # its first step it has vacated (7, 0) rather than still sitting
+        # there.
+        assert b.get_piece_at(pos(7, 0)) == EMPTY
+        assert b.get_piece_at(pos(7, 5)) == EMPTY
 
 
 class TestRest:
@@ -399,7 +413,11 @@ class TestRest:
         place(b, "WHITE", "PAWN", 0, 3)  # block the path before arrival
         rook.state = State.moving
         arb.advance_time(5 * DEFAULT_MOVE_DELAY_MS)
-        assert b.get_piece_at(pos(0, 0)) == rook
+        # Vacated long before arrival, so it doesn't return to (0, 0) - it
+        # retreats to the nearest free square walking backwards from its
+        # target, (0, 4) (the blocker sits further back, at (0, 3)).
+        assert b.get_piece_at(pos(0, 0)) == EMPTY
+        assert b.get_piece_at(pos(0, 4)) == rook
         assert rook.state == State.long_rest
         arb.advance_time(LONG_REST_DURATION_MS)
         assert rook.state == State.idle
@@ -420,3 +438,79 @@ class TestCapturedWhileResting:
         arb.advance_time(2 * DEFAULT_MOVE_DELAY_MS + LONG_REST_DURATION_MS)
         assert b.get_piece_at(pos(0, 2)) == black
         assert white.state == State.captured
+
+
+class TestGhostMoveRegression:
+    """A piece killed mid-flight must not leave its own pending Move
+    behind - the "ghost move" bug: without dropping it, a corpse could
+    still truncate/capture as if it were alive, and be captured a second
+    time itself (double-scoring its own value)."""
+
+    def test_captured_piece_drops_its_own_pending_move(self):
+        b = empty_board(rows=1, cols=8)
+        black_rook = place(b, "BLACK", "ROOK", 0, 0)
+        white_rook = place(b, "WHITE", "ROOK", 0, 4)
+        arb = RealTimeArbiter(b)
+        arb.add_move(black_rook, pos(0, 0), pos(0, 7))   # long trip, arrives late
+        arb.advance_time(1)
+        arb.add_move(white_rook, pos(0, 4), pos(0, 0))   # sweeps onto black's origin
+        arb.advance_time(4 * DEFAULT_MOVE_DELAY_MS)
+        assert black_rook.state == State.captured
+        assert arb.pending_moves == []
+
+    def test_sweeping_a_corpses_old_path_does_not_recapture_it(self):
+        b = empty_board(rows=1, cols=8)
+        black_rook = place(b, "BLACK", "ROOK", 0, 0)
+        white_killer = place(b, "WHITE", "ROOK", 0, 4)
+        white_sweeper = place(b, "WHITE", "ROOK", 0, 6)
+        bus = EventBus()
+        captured = []
+        bus.subscribe(PieceCaptured, captured.append)
+        arb = RealTimeArbiter(b, bus)
+        arb.add_move(black_rook, pos(0, 0), pos(0, 7))
+        arb.advance_time(1)
+        arb.add_move(white_killer, pos(0, 4), pos(0, 0))
+        arb.advance_time(4 * DEFAULT_MOVE_DELAY_MS)
+        assert black_rook.state == State.captured
+        assert len(captured) == 1
+        # A third piece crosses straight through where the dead rook's
+        # move used to be heading (its stale path, had it not been
+        # dropped, would still claim to occupy col 7).
+        arb.add_move(white_sweeper, pos(0, 6), pos(0, 7))
+        arb.advance_time(2 * DEFAULT_MOVE_DELAY_MS + LONG_REST_DURATION_MS)
+        assert len(captured) == 1
+        assert b.get_piece_at(pos(0, 7)) == white_sweeper
+
+    def test_dead_piece_no_longer_truncates_a_friendly_mover(self):
+        b = empty_board(rows=1, cols=8)
+        black_rook = place(b, "BLACK", "ROOK", 0, 0)
+        white_killer = place(b, "WHITE", "ROOK", 0, 4)
+        black_second = place(b, "BLACK", "ROOK", 0, 6)
+        arb = RealTimeArbiter(b)
+        arb.add_move(black_rook, pos(0, 0), pos(0, 7))
+        arb.advance_time(1)
+        arb.add_move(white_killer, pos(0, 4), pos(0, 0))
+        arb.advance_time(4 * DEFAULT_MOVE_DELAY_MS)
+        assert black_rook.state == State.captured
+        # A second black piece crosses the dead rook's old path - it must
+        # not be truncated by a corpse that no longer has a pending move.
+        assert arb.add_move(black_second, pos(0, 6), pos(0, 7)) is True
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS + LONG_REST_DURATION_MS)
+        assert b.get_piece_at(pos(0, 7)) == black_second
+        assert black_second.state == State.idle
+
+    def test_jump_never_vacates_and_still_intercepts_after_landing(self):
+        b = empty_board(rows=1, cols=8)
+        jumper = place(b, "BLACK", "ROOK", 0, 0)
+        mover = place(b, "WHITE", "ROOK", 0, 4)
+        arb = RealTimeArbiter(b)
+        arb.add_jump(jumper, pos(0, 0))
+        arb.advance_time(1)
+        # An airborne piece is never vacated - it stays on the board for
+        # its whole jump window, still able to intercept.
+        assert b.get_piece_at(pos(0, 0)) == jumper
+        arb.add_move(mover, pos(0, 4), pos(0, 0))
+        arb.advance_time(4 * DEFAULT_MOVE_DELAY_MS)
+        assert mover.state == State.captured
+        assert jumper.state != State.captured
+        assert b.get_piece_at(pos(0, 0)) == jumper

@@ -28,6 +28,52 @@ def pos(x, y):
     return Position(x, y)
 
 
+class TestGetAllPiecesMotion:
+    def test_idle_piece_has_no_move_times(self):
+        b = empty_board()
+        place(b, "WHITE", "ROOK", 0, 0)
+        bus = EventBus()
+        arb = RealTimeArbiter(b, bus)
+        scores = ScoreTracker(bus)
+        snapshot = GameSnapshot(b, arb, scores)
+
+        dto = snapshot.get_all_pieces()[0]
+
+        assert dto.move_start_ms is None
+        assert dto.move_arrival_ms is None
+        assert dto.progress == 0.0
+
+    def test_moving_piece_carries_its_moves_absolute_times(self):
+        b = empty_board()
+        rook = place(b, "WHITE", "ROOK", 0, 0)
+        bus = EventBus()
+        arb = RealTimeArbiter(b, bus)
+        scores = ScoreTracker(bus)
+        arb.add_move(rook, pos(0, 0), pos(0, 3))
+        arb.advance_time(DEFAULT_MOVE_DELAY_MS)  # one square into a 3-square move
+        snapshot = GameSnapshot(b, arb, scores)
+
+        dto = snapshot.get_all_pieces()[0]
+
+        assert dto.move_start_ms == 0
+        assert dto.move_arrival_ms == 3 * DEFAULT_MOVE_DELAY_MS
+        assert dto.progress == DEFAULT_MOVE_DELAY_MS / (3 * DEFAULT_MOVE_DELAY_MS)
+
+
+class TestGetClockMs:
+    def test_reports_the_arbiters_clock(self):
+        b = empty_board()
+        bus = EventBus()
+        arb = RealTimeArbiter(b, bus)
+        scores = ScoreTracker(bus)
+        snapshot = GameSnapshot(b, arb, scores)
+        assert snapshot.get_clock_ms() == 0
+
+        arb.advance_time(1234)
+
+        assert snapshot.get_clock_ms() == 1234
+
+
 class TestGetScores:
     def test_fresh_game_scores_are_zero(self):
         b = empty_board()

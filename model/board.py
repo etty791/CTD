@@ -1,4 +1,4 @@
-from model.piece import Piece, Color, PieceType, State
+from model.piece import Piece, Color, PieceType
 from model.position import Position
 EMPTY_CELL= '.'
 BOARD_SIZE = 8
@@ -54,12 +54,23 @@ class Board:
         return 0 <=  position.x< self.rows and 0 <= position.y < self.cols
     
     def move_piece(self, from_pos, to_pos):
+        """Relocate the piece at `from_pos` to `to_pos`, overwriting
+        whatever was there. Capture bookkeeping (marking a displaced
+        occupant as State.captured) is not this method's job - it is the
+        arbiter's, via RealTimeArbiter._mark_captured - so callers that
+        care about a captured occupant must handle it themselves before
+        calling this."""
         piece = self.get_piece_at(from_pos)
-        if self.get_piece_at(to_pos) != EMPTY_CELL:
-            self.get_piece_at(to_pos).state = State.captured
         self.set_piece_at(to_pos, piece)
         self.set_piece_at(from_pos, EMPTY_CELL)
         piece.position = to_pos
+        self._apply_promotion(piece)
+
+    def place_piece(self, position: Position, piece: Piece) -> None:
+        """Set `position` to hold `piece` (syncing its .position) and
+        apply promotion - used when a mid-flight move lands, so promotion
+        stays in model/ rather than leaking into real_time."""
+        self.set_piece_at(position, piece)
         self._apply_promotion(piece)
 
     def is_friendly(self, pos: Position, color: Color) -> bool:

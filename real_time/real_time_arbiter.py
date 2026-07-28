@@ -4,7 +4,7 @@ from typing import Optional
 
 from model.board import EMPTY_CELL
 from model.piece import Piece, PieceType, Color, State
-from rules.rules_engine import validate_move
+from rules.rules_engine import validate_piece_move
 from model.position import Position
 from real_time.real_time_config import *
 from events.event_bus import EventBus
@@ -118,6 +118,24 @@ class RealTimeArbiter:
             captured_piece.position, capturing_move_id,
         ))
 
+    def _mark_captured(self, piece: Piece, capturing_move_id: int) -> None:
+        """The one place a piece dies. Idempotent - a piece already marked
+        captured (e.g. its old path gets swept a second time before the
+        ghost is fully cleaned up) is left alone, so it is never announced
+        or scored twice. Evicts the piece's own pending move (if any) so a
+        corpse can no longer truncate, capture, or be captured again."""
+        if piece.state == State.captured:
+            return
+        piece.state = State.captured
+        self._record_capture(piece, capturing_move_id)
+        self._drop_moves_for(piece)
+
+    def _drop_moves_for(self, piece: Piece) -> None:
+        """Remove every pending Move belonging to `piece` - called the
+        instant a piece dies so its stale move can never again be swept up
+        as if the piece were still travelling."""
+        self.pending_moves = [m for m in self.pending_moves if m.piece is not piece]
+
     def add_move(self, piece, origin, target):
         # --- Rule 1: Movement Lock (Debounce) ---
         # A piece that is already mid-flight has an immutable path: any
@@ -165,6 +183,7 @@ class RealTimeArbiter:
         king_captured = False
         self.clock += ms
         king_captured = self._resolve_path_collisions() or king_captured
+        self._vacate_departed_origins()
         arrived = self._pop_arrived_moves()
         for target, moves in self._group_by_target(arrived).items():
             if len(moves) > 1:
@@ -173,6 +192,20 @@ class RealTimeArbiter:
                 king_captured = self._resolve_single(moves[0]) or king_captured
         self._release_expired_rests()
         return king_captured
+
+    def _vacate_departed_origins(self) -> None:
+        """A mover has left its origin the instant its first step
+        completes (start_time + DEFAULT_MOVE_DELAY_MS) - per the user's
+        occupancy rule, other pieces then treat that square as empty:
+        passable and landable. Jumps never vacate (origin == target, and
+        the piece stays there, airborne, for the whole window so it can
+        keep intercepting)."""
+        for move in self.pending_moves:
+            if move.piece.state == State.airborne or move.origin == move.target:
+                continue
+            first_step_time = move.start_time + DEFAULT_MOVE_DELAY_MS
+            if self.clock >= first_step_time and self.board.get_piece_at(move.origin) == move.piece:
+                self.board.set_piece_at(move.origin, EMPTY_CELL)
 
     # ------------------------------------------------------------------
     # Rest (cooldown) handling
@@ -206,17 +239,58 @@ class RealTimeArbiter:
         self._resting = still_resting
 
     def _abort_move(self, move) -> None:
-        """End a move that never took its piece anywhere: the piece rests
-        where it already stands and no MoveCompleted is published. Shared by
-        every abort site (blocked before its first step, losing a same-color
-        arrival race, or failing revalidation on arrival) so subscribers see
-        exactly one event shape for 'this move is over, nothing moved'."""
+        """End a move that does not complete as planned. Shared by every
+        abort site: blocked before its first step, losing a same-color
+        arrival race, or failing revalidation on arrival.
+
+        Two cases, distinguished by whether the piece ever vacated its
+        origin (board state is the single source of truth for this - see
+        _vacate_departed_origins):
+
+        - Never vacated (still standing on origin - true for a jump, which
+          never vacates, or a slide blocked before its first step; proof:
+          a truncate-to-origin is only ever assigned when the blocker
+          arrives at or before the first-step instant): unchanged from
+          before - the piece rests right where it stands and MoveAborted
+          is published. Defensive guard: if the origin cell was somehow
+          not held by the piece, put it back rather than losing it.
+        - Already vacated: per the user's rule it never returns to origin -
+          it retreats instead (see _retreat_vacated_move).
+        """
         if move.piece.state == State.captured:
             # Already destroyed (and already announced via PieceCaptured):
             # there is no resting piece left to report.
             return
-        self._begin_rest(move.piece, State.long_rest, move.arrival_time)
-        self._publish(MoveAborted(move.move_id, move.piece.id, move.origin))
+        if move.origin == move.target or self.board.get_piece_at(move.origin) == move.piece:
+            if move.origin != move.target and self.board.get_piece_at(move.origin) != move.piece:
+                self.board.place_piece(move.origin, move.piece)
+            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+            self._publish(MoveAborted(move.move_id, move.piece.id, move.origin))
+            return
+        self._retreat_vacated_move(move)
+
+    def _retreat_vacated_move(self, move) -> None:
+        """A vacated piece that cannot complete its move does not return to
+        origin. It stops on the nearest free square walking backwards from
+        its (contested/illegal) target along its own path - for a
+        one-square move that is the origin itself, which is why a
+        single-step abort degenerates to the pre-vacate MoveAborted
+        behavior. If no square along the path is free, the piece has
+        nowhere to stand and is removed."""
+        path = _path_cells(move.origin, move.target)
+        # Nearest-to-target first: path cells (excluding the contested
+        # target) walked backwards, then origin as the final fallback.
+        candidates = list(reversed(path[:-1])) + [move.origin]
+        for cell in candidates:
+            if self.board.is_cell_empty(cell):
+                self.board.place_piece(cell, move.piece)
+                self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+                self._publish(MoveTruncated(move.move_id, move.piece.id, cell, move.arrival_time))
+                return
+        # Not believed reachable (the origin is always a candidate and,
+        # per the vacate proof, is free unless something else has already
+        # landed there) - but must not crash if it somehow happens.
+        self._mark_captured(move.piece, move.move_id)
 
     # ------------------------------------------------------------------
     # Rules 2 & 3: temporal path-collision detection
@@ -314,6 +388,10 @@ class RealTimeArbiter:
 
         king_captured = False
         for move in list(moves):
+            if move not in self.pending_moves:
+                # Already dropped underneath us - e.g. its piece was
+                # marked captured while resolving another move's fate.
+                continue
             outcome = fate.get(id(move))
             if outcome is None:
                 continue
@@ -330,12 +408,12 @@ class RealTimeArbiter:
         """Destroy a piece that lost a race for a shared square while still
         mid-flight. Returns True if it was a king (publishing GameEnded for
         the surviving side), so every caller propagates game-over
-        identically. Does not touch pending_moves - callers differ on
-        whether the move is still in that list."""
-        move.piece.state = State.captured
-        self._record_capture(move.piece, capturing_move_id)
+        identically. _mark_captured is idempotent and evicts the piece's
+        own pending move, so callers need not touch pending_moves
+        themselves."""
         if self.board.get_piece_at(move.origin) == move.piece:
             self.board.set_piece_at(move.origin, EMPTY_CELL)
+        self._mark_captured(move.piece, capturing_move_id)
         if move.piece.type == PieceType.KING:
             self._publish(GameEnded(_opposite_color(move.piece.color)))
             return True
@@ -343,10 +421,10 @@ class RealTimeArbiter:
 
     def _capture_in_flight(self, move, capturing_move_id) -> bool:
         """A piece is destroyed mid-transit by an opposite-color piece
-        that reaches their shared square later than it does."""
-        king_captured = self._destroy_in_transit(move, capturing_move_id)
-        self.pending_moves.remove(move)
-        return king_captured
+        that reaches their shared square later than it does. _mark_captured
+        (via _destroy_in_transit) already evicted this move from
+        pending_moves."""
+        return self._destroy_in_transit(move, capturing_move_id)
 
     def _truncate_move(self, move, path, collision_cell):
         """A piece is blocked by its own color: it stops one square short
@@ -428,8 +506,11 @@ class RealTimeArbiter:
     def _is_still_valid(self, move):
         if move.piece.state == State.captured:
             return False
-        #check if path still clear
-        if not validate_move(self.board, move.origin, move.target).is_valid:
+        # Check if the move is still legal. move.origin may currently be
+        # empty (the piece vacates it mid-flight - see
+        # _vacate_departed_origins), so this is keyed off the piece itself
+        # rather than a board scan of its origin cell.
+        if not validate_piece_move(self.board, move.piece, move.target).is_valid:
             return False
         target_piece = self.board.get_piece_at(move.target)
         if target_piece != EMPTY_CELL and target_piece.color == move.piece.color:
@@ -449,8 +530,10 @@ class RealTimeArbiter:
         target_piece = self.board.get_piece_at(move.target)
         is_game_over = target_piece != EMPTY_CELL and target_piece.type == PieceType.KING
         if target_piece != EMPTY_CELL:
-            self._record_capture(target_piece, move.move_id)
-        self.board.move_piece(move.origin, move.target)
+            self._mark_captured(target_piece, move.move_id)
+        if self.board.get_piece_at(move.origin) == move.piece:
+            self.board.set_piece_at(move.origin, EMPTY_CELL)
+        self.board.place_piece(move.target, move.piece)
         self._begin_rest(move.piece, State.long_rest, move.arrival_time)
         self._publish(MoveCompleted(
             move.move_id, move.piece.id, move.piece.type, move.piece.color,
