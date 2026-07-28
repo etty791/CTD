@@ -34,6 +34,7 @@ GAME_OVER_REASON_DISCONNECT = "opponent_disconnected"
 DISCONNECT_REASON = GAME_OVER_REASON_DISCONNECT
 
 # --- Error messages ---
+ERROR_ACCOUNT_NOT_FOUND = "account not found"
 ERROR_NOT_AUTHENTICATED = "not authenticated"
 ERROR_NOT_IN_GAME = "not in a game"
 ERROR_NOT_YOUR_PIECE = "not your piece"

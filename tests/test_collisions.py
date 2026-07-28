@@ -387,8 +387,9 @@ class TestEnemyCollisionsEdgeCases:
     def test_simultaneous_start_same_arrival_time_tiebreak(self):
         """Both pieces start simultaneously and arrive at the shared cell
         at exactly the same time: since neither one arrives strictly
-        earlier than the other, both sides of the earlier-is-captured
-        check fire and neither survives — a mutual capture."""
+        earlier than the other, the tie is broken deterministically by
+        move_id — the move ordered first (wr, added before br) survives
+        and captures the other."""
         b = make_board(1, 5)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 4)
@@ -396,8 +397,9 @@ class TestEnemyCollisionsEdgeCases:
         arb.add_move(wr, pos(0, 0), pos(0, 4))
         arb.add_move(br, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * D + REST)
-        assert wr.state == State.captured
+        assert wr.state == State.idle
         assert br.state == State.captured
+        assert b.get_piece_at(pos(0, 4)) == wr
 
     def test_enemy_collision_does_not_remove_winner_from_origin(self):
         """Winner is placed at destination; loser is captured."""

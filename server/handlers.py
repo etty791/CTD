@@ -21,6 +21,7 @@ from server.rooms import Room, RoomManager
 from server.async_clock import AsyncClock
 from server.persistence.worker import PersistenceWorker
 from server.server_config import (
+    ERROR_ACCOUNT_NOT_FOUND,
     ERROR_ALREADY_IN_GAME,
     ERROR_ALREADY_LOGGED_IN,
     ERROR_BAD_CREDENTIALS,
@@ -73,11 +74,12 @@ async def _start_game_from_room(room: Room) -> None:
 
 
 async def _on_game_finalized(game: GameSession) -> None:
-    """GameSession.on_finalize callback: drop the game and free its players'
-    room membership. Observers are left attached — the room closes naturally
-    once everyone (players and observers) has left via room_manager.leave."""
+    """GameSession.on_finalize callback: drop the game and free every
+    participant's room membership -- players and observers alike, so a
+    finished game's room closes once everyone has left it instead of
+    leaving a spectator wedged in a dead room."""
     registry.remove(game.id)
-    for session in game.players.values():
+    for session in (*game.players.values(), *game.observers):
         room_manager.leave(session)
 
 
@@ -265,10 +267,12 @@ async def handle_play(conn: Connection, envelope: Envelope) -> None:
         await conn.send_error(ERROR_ALREADY_IN_GAME)
         return
 
-    # Logged-in players always have a user row, so this is never None.
     rating = await asyncio.wrap_future(
         persistence.submit(lambda repo: repo.get_rating(session.player_id))
     )
+    if rating is None:
+        await conn.send_error(ERROR_ACCOUNT_NOT_FOUND)
+        return
 
     result = room_manager.seek(session, rating)
     if result.matched:

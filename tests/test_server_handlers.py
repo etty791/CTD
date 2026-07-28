@@ -11,6 +11,7 @@ from server.persistence.user_repository import GameResultRatings, UserRepository
 from shared.protocol import Envelope, MessageType
 from server.rooms import RoomManager
 from server.server_config import (
+    ERROR_ACCOUNT_NOT_FOUND,
     ERROR_ALREADY_IN_GAME,
     ERROR_ALREADY_LOGGED_IN,
     ERROR_BAD_CREDENTIALS,
@@ -352,6 +353,18 @@ class TestHandlePlay:
         assert start_a[0].payload["color"] == "w"  # first caller = White
         assert start_b[0].payload["color"] == "b"  # second caller = Black
 
+    async def test_missing_rating_row_errors_instead_of_crashing(self, real_persistence):
+        handlers.persistence = real_persistence
+        # No create_user call: "alice" has a session but no row in the
+        # users table, so get_rating returns None (deleted account, etc).
+        conn = FakeConnection()
+        PlayerSession("alice", conn)
+
+        await handlers.handle_play(conn, Envelope(type=MessageType.PLAY, payload={}))
+
+        assert conn.errors == [ERROR_ACCOUNT_NOT_FOUND]
+        assert not any(e.type == MessageType.GAME_START for e in conn.sent)
+
     async def test_lone_seeker_times_out(self, real_persistence):
         handlers.persistence = real_persistence
         real_persistence.repo.create_user("alice", "pw")
@@ -560,3 +573,34 @@ class TestOnGameFinalized:
         assert handlers.registry.get(game.id) is None
         assert handlers.room_manager.room_of("p1") is None
         assert handlers.room_manager.room_of("p2") is None
+
+    async def test_frees_observers_too_and_closes_the_room(self):
+        """An observer must not be left wedged in room_manager once the
+        game ends (§8.7), and once every participant -- players and
+        observers -- has left, the room itself must close rather than
+        keep dangling on a game_id the registry already dropped (§8.8)."""
+        handlers.persistence = _CannedPersistence()
+        conn_a, conn_b, conn_obs = FakeConnection(), FakeConnection(), FakeConnection()
+        player_a = PlayerSession("p1", conn_a)
+        player_b = PlayerSession("p2", conn_b)
+        observer = PlayerSession("obs", conn_obs)
+        result_a = handlers.room_manager.create_room(player_a)
+        handlers.room_manager.join(result_a.room.name, player_b)
+        room_id = result_a.room.name
+        handlers.room_manager.join(room_id, observer)
+
+        game = handlers.registry.create_game(
+            player_a,
+            player_b,
+            handlers.clock,
+            handlers.persistence,
+            room_id=room_id,
+            on_finalize=handlers._on_game_finalized,
+        )
+        game.add_observer(observer)
+        handlers.registry.add_observer(game.id, observer.player_id)
+
+        await game.finalize_by_forfeit(Color.BLACK, GAME_OVER_REASON_DISCONNECT)
+
+        assert handlers.room_manager.room_of("obs") is None
+        assert handlers.room_manager.room_exists(room_id) is False

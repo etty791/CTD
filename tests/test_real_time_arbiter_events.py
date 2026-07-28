@@ -234,7 +234,9 @@ class TestMoveAborted:
 
     def test_move_blocked_before_its_first_step_publishes_aborted(self):
         # Both rooks want the same square and would reach it at the same
-        # instant, one step in: neither can take even that step.
+        # instant, one step in. left's move was added first, so the
+        # deterministic move_id tie-break has it win the race and keep
+        # going; only right is blocked before it can take even that step.
         b = empty_board()
         left = place(b, "WHITE", "ROOK", 0, 0)
         right = place(b, "WHITE", "ROOK", 0, 2)
@@ -248,7 +250,6 @@ class TestMoveAborted:
         arb.advance_time(1)
 
         assert {(e.piece_id, e.position) for e in received} == {
-            (left.id, pos(0, 0)),
             (right.id, pos(0, 2)),
         }
 

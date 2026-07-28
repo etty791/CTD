@@ -25,6 +25,18 @@ class FakeConnection:
         self.sent.append(envelope)
 
 
+class FailingConnection:
+    """A connection whose send always raises, simulating a half-closed
+    socket -- used to prove one dead recipient can't blank a broadcast to
+    everyone after it (§8.11)."""
+
+    def __init__(self):
+        self.player_session = None
+
+    async def send(self, envelope: Envelope) -> None:
+        raise RuntimeError("socket is closed")
+
+
 class FakeHandle:
     def __init__(self):
         self.cancelled = False
@@ -109,6 +121,24 @@ class TestBroadcastState:
             assert len(envelope.payload["pieces"]) == 32
             for piece in envelope.payload["pieces"]:
                 assert set(piece.keys()) == PIECE_KEYS
+
+    async def test_one_dead_recipient_does_not_blank_the_rest(self):
+        """§8.11: a bare send loop would let the first raise skip every
+        later recipient. player_a's connection is half-closed; player_b and
+        the observer must still get their frame."""
+        conn_a, conn_b = FailingConnection(), FakeConnection()
+        player_a = PlayerSession("white", conn_a)
+        player_b = PlayerSession("black", conn_b)
+        session = GameSession(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="room1",
+        )
+        obs_conn = FakeConnection()
+        session.add_observer(PlayerSession("obs", obs_conn))
+
+        await session.broadcast_state()
+
+        assert len(conn_b.sent) == 1
+        assert len(obs_conn.sent) == 1
 
 
 class TestUsernameOfColor:
@@ -220,6 +250,24 @@ class TestFinalize:
         sent_after_first = len(conn_a.sent)
         await session._finalize(GAME_OVER_REASON_KING_CAPTURED)
         assert len(conn_a.sent) == sent_after_first
+
+    async def test_one_dead_recipient_does_not_swallow_game_over(self):
+        """§8.11: the GAME_OVER send loop must isolate a failing recipient
+        the same way broadcast_state does -- a disconnected observer must
+        not prevent the players from being told the game ended."""
+        conn_a, conn_b = FakeConnection(), FakeConnection()
+        player_a = PlayerSession("white", conn_a)
+        player_b = PlayerSession("black", conn_b)
+        session = GameSession(
+            player_a, player_b, FakeClock(), FakePersistence(), room_id="room1",
+        )
+        session.add_observer(PlayerSession("obs", FailingConnection()))
+
+        session._on_game_ended(GameEnded(Color.WHITE))
+        await session._finalize(GAME_OVER_REASON_KING_CAPTURED)
+
+        for conn in (conn_a, conn_b):
+            assert conn.sent[-1].type == MessageType.GAME_OVER
 
 
 class TestFinalizeByForfeit:

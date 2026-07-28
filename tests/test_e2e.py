@@ -134,7 +134,9 @@ class TestPawnPromotion:
 class TestCollision:
     def test_collision_clears_target_cell(self, capsys):
         # wR at (row=0,col=0) and bR at (row=2,col=0) both target (row=1,col=0)
-        # distance=1 each → arrive at 1000 ms
+        # distance=1 each → arrive at 1000 ms, an exact tie. wR's move was
+        # issued first, so the deterministic move_id tie-break has it survive
+        # at the shared cell and capture bR.
         script = (
             "Board:\n"
             "wR .\n"
@@ -151,7 +153,7 @@ class TestCollision:
         out = run(script, capsys)
         lines = [l for l in out.strip().splitlines() if l.strip()]
         middle_row = lines[1].split()
-        assert middle_row[0] == "."
+        assert middle_row[0] == "wR"
 
 
 # ---------------------------------------------------------------------------

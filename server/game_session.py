@@ -103,8 +103,10 @@ class GameSession:
             payload=state_payload.model_dump(),
             game_id=self.id,
         )
-        for session in self._recipients():
-            await session.connection.send(envelope)
+        await asyncio.gather(
+            *(session.connection.send(envelope) for session in self._recipients()),
+            return_exceptions=True,
+        )
 
     # --- ticking ----------------------------------------------------------
 
@@ -192,8 +194,10 @@ class GameSession:
             payload=payload.model_dump(),
             game_id=self.id,
         )
-        for session in self._recipients():
-            await session.connection.send(envelope)
+        await asyncio.gather(
+            *(session.connection.send(envelope) for session in self._recipients()),
+            return_exceptions=True,
+        )
 
         if self._on_finalize is not None:
             await self._on_finalize(self)

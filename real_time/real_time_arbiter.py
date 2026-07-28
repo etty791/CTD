@@ -373,18 +373,35 @@ class RealTimeArbiter:
                 kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
 
                 if kind == _CollisionOutcome.TRUNCATE:
-                    # Block (same color): the later piece stops
-                    if t_a >= t_b:
-                        consider(a, resolution_time, kind, (path_a, cell))
-                    if t_b >= t_a:
-                        consider(b, resolution_time, kind, (path_b, cell))
+                    # Block (same color): the later piece stops. On an exact
+                    # tie (t_a == t_b) the move ordered first (lower move_id)
+                    # is treated as earlier and keeps going, so exactly one
+                    # side is ever truncated instead of both.
+                    if t_a == t_b:
+                        loser, loser_path = (
+                            (b, path_b) if a.move_id < b.move_id else (a, path_a)
+                        )
+                    elif t_a > t_b:
+                        loser, loser_path = a, path_a
+                    else:
+                        loser, loser_path = b, path_b
+                    consider(loser, resolution_time, kind, (loser_path, cell))
                 else:
                     # Capture (different colors): the earlier piece is destroyed
-                    # by the later (surviving) piece's move.
-                    if t_a <= t_b:
-                        consider(a, resolution_time, kind, (path_a, cell, b.move_id))
-                    if t_b <= t_a:
-                        consider(b, resolution_time, kind, (path_b, cell, a.move_id))
+                    # by the later (surviving) piece's move. On an exact tie
+                    # the move ordered first (lower move_id) survives and
+                    # captures the other, instead of both being destroyed.
+                    if t_a == t_b:
+                        loser, loser_path, winner_move_id = (
+                            (b, path_b, a.move_id)
+                            if a.move_id < b.move_id
+                            else (a, path_a, b.move_id)
+                        )
+                    elif t_a < t_b:
+                        loser, loser_path, winner_move_id = a, path_a, b.move_id
+                    else:
+                        loser, loser_path, winner_move_id = b, path_b, a.move_id
+                    consider(loser, resolution_time, kind, (loser_path, cell, winner_move_id))
 
         king_captured = False
         for move in list(moves):

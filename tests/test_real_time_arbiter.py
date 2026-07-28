@@ -227,7 +227,11 @@ class TestJump:
 
 
 class TestCollision:
-    def test_collision_clears_both_pieces(self):
+    def test_collision_at_exact_tie_deterministic_survivor(self):
+        # Both rooks are 3 steps from the shared cell and start together, an
+        # exact arrival-time tie. rook1's move was added first, so the
+        # deterministic move_id tie-break has it survive at the cell and
+        # capture rook2 rather than both being destroyed.
         b = empty_board()
         rook1 = place(b, "WHITE", "ROOK", 0, 3)
         rook2 = place(b, "BLACK", "ROOK", 6, 3)
@@ -235,7 +239,7 @@ class TestCollision:
         arb.add_move(rook1, pos(0, 3), pos(3, 3))
         arb.add_move(rook2, pos(6, 3), pos(3, 3))
         arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
-        assert b.get_piece_at(pos(3, 3)) == EMPTY
+        assert b.get_piece_at(pos(3, 3)) == rook1
 
     def test_collision_clears_origins(self):
         b = empty_board()
