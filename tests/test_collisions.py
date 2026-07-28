@@ -17,7 +17,7 @@ assert State.idle advance time past DEFAULT_MOVE_DELAY_MS * distance +
 LONG_REST_DURATION_MS (aliased REST below) so the rest has expired too.
 """
 import pytest
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from model.piece import Piece, PieceType, State, Color
 from model.position import Position
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
@@ -28,7 +28,7 @@ REST = LONG_REST_DURATION_MS
 
 
 def make_board(rows=1, cols=8):
-    return Board([[EMPTY_CELL] * cols for _ in range(rows)])
+    return Board([[None] * cols for _ in range(rows)])
 
 
 def place(board, color, type, x, y):
@@ -445,7 +445,7 @@ class TestEnemyCollisionsEdgeCases:
         for x in range(1):
             for y in range(8):
                 piece = b.get_piece_at(pos(x, y))
-                if piece != EMPTY_CELL:
+                if piece is not None:
                     assert piece.color != br.color or piece != br
 
     def test_multiple_overlapping_paths_first_collision_resolved(self):
@@ -995,7 +995,7 @@ class TestBoardBoundaryEdgeCases:
         arb.add_move(br, pos(7, 0), pos(0, 0))
         # Both heading to (0, 0)
         arb.advance_time(7 * D)
-        assert b.get_piece_at(pos(0, 0)) != EMPTY_CELL
+        assert b.get_piece_at(pos(0, 0)) is not None
 
     def test_collision_at_bottom_right_corner(self):
         """Collision at bottom-right corner."""
@@ -1007,7 +1007,7 @@ class TestBoardBoundaryEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 7), pos(7, 7))
         arb.advance_time(7 * D)
-        assert b.get_piece_at(pos(7, 7)) != EMPTY_CELL
+        assert b.get_piece_at(pos(7, 7)) is not None
 
     def test_collision_along_edge(self):
         """Collision along the board edge."""

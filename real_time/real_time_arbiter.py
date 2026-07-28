@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from model.board import EMPTY_CELL
 from model.piece import Piece, PieceType, Color, State
+from rules.promotion import is_promotion_square
 from rules.rules_engine import validate_piece_move
 from model.position import Position
 from real_time.real_time_config import *
@@ -136,6 +136,13 @@ class RealTimeArbiter:
         as if the piece were still travelling."""
         self.pending_moves = [m for m in self.pending_moves if m.piece is not piece]
 
+    def _place_piece(self, position: Position, piece: Piece) -> None:
+        """Land `piece` on `position` and apply promotion - the arbiter's
+        job, not Board's, since promotion is a rule (rules/promotion.py)."""
+        self.board.place_piece(position, piece)
+        if is_promotion_square(self.board, piece):
+            piece.type = PieceType.QUEEN
+
     def add_move(self, piece, origin, target):
         # --- Rule 1: Movement Lock (Debounce) ---
         # A piece that is already mid-flight has an immutable path: any
@@ -205,7 +212,7 @@ class RealTimeArbiter:
                 continue
             first_step_time = move.start_time + DEFAULT_MOVE_DELAY_MS
             if self.clock >= first_step_time and self.board.get_piece_at(move.origin) == move.piece:
-                self.board.set_piece_at(move.origin, EMPTY_CELL)
+                self.board.set_piece_at(move.origin, None)
 
     # ------------------------------------------------------------------
     # Rest (cooldown) handling
@@ -263,7 +270,7 @@ class RealTimeArbiter:
             return
         if move.origin == move.target or self.board.get_piece_at(move.origin) == move.piece:
             if move.origin != move.target and self.board.get_piece_at(move.origin) != move.piece:
-                self.board.place_piece(move.origin, move.piece)
+                self._place_piece(move.origin, move.piece)
             self._begin_rest(move.piece, State.long_rest, move.arrival_time)
             self._publish(MoveAborted(move.move_id, move.piece.id, move.origin))
             return
@@ -283,7 +290,7 @@ class RealTimeArbiter:
         candidates = list(reversed(path[:-1])) + [move.origin]
         for cell in candidates:
             if self.board.is_cell_empty(cell):
-                self.board.place_piece(cell, move.piece)
+                self._place_piece(cell, move.piece)
                 self._begin_rest(move.piece, State.long_rest, move.arrival_time)
                 self._publish(MoveTruncated(move.move_id, move.piece.id, cell, move.arrival_time))
                 return
@@ -434,7 +441,7 @@ class RealTimeArbiter:
         own pending move, so callers need not touch pending_moves
         themselves."""
         if self.board.get_piece_at(move.origin) == move.piece:
-            self.board.set_piece_at(move.origin, EMPTY_CELL)
+            self.board.set_piece_at(move.origin, None)
         self._mark_captured(move.piece, capturing_move_id)
         if move.piece.type == PieceType.KING:
             self._publish(GameEnded(_opposite_color(move.piece.color)))
@@ -535,7 +542,7 @@ class RealTimeArbiter:
         if not validate_piece_move(self.board, move.piece, move.target).is_valid:
             return False
         target_piece = self.board.get_piece_at(move.target)
-        if target_piece != EMPTY_CELL and target_piece.color == move.piece.color:
+        if target_piece is not None and target_piece.color == move.piece.color:
             return False
         return True
 
@@ -550,12 +557,12 @@ class RealTimeArbiter:
             return False
 
         target_piece = self.board.get_piece_at(move.target)
-        is_game_over = target_piece != EMPTY_CELL and target_piece.type == PieceType.KING
-        if target_piece != EMPTY_CELL:
+        is_game_over = target_piece is not None and target_piece.type == PieceType.KING
+        if target_piece is not None:
             self._mark_captured(target_piece, move.move_id)
         if self.board.get_piece_at(move.origin) == move.piece:
-            self.board.set_piece_at(move.origin, EMPTY_CELL)
-        self.board.place_piece(move.target, move.piece)
+            self.board.set_piece_at(move.origin, None)
+        self._place_piece(move.target, move.piece)
         self._begin_rest(move.piece, State.long_rest, move.arrival_time)
         self._publish(MoveCompleted(
             move.move_id, move.piece.id, move.piece.type, move.piece.color,

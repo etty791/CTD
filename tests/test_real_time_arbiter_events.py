@@ -14,7 +14,7 @@ from events.game_events import (
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
 from real_time.real_time_config import LONG_REST_DURATION_MS, SHORT_REST_DURATION_MS
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

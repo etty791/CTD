@@ -35,8 +35,6 @@ MAX_STATE_INTERVAL_MS = 1000
 GAME_OVER_REASON_KING_CAPTURED = "king_captured"
 GAME_OVER_REASON_DISCONNECT = "opponent_disconnected"
 GAME_OVER_REASON_RESIGNATION = "resignation"
-# Same reason, surfaced on the RESIGN message a disconnect triggers.
-DISCONNECT_REASON = GAME_OVER_REASON_DISCONNECT
 
 # --- Error messages ---
 ERROR_ACCOUNT_NOT_FOUND = "account not found"

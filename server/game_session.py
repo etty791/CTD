@@ -148,8 +148,8 @@ class GameSession:
     def _mark_dirty(self, event) -> None:
         """SYNC bus handler for every state-changing event. Deliberately does
         nothing but raise the flag: several events routinely fire within one
-        tick (a capture is a MoveCompleted + PieceCaptured + ScoreChanged),
-        and they should cost exactly one frame between them."""
+        tick (a capture is a MoveCompleted + PieceCaptured), and they should
+        cost exactly one frame between them."""
         self._dirty = True
 
     def _reset_broadcast_state(self) -> None:

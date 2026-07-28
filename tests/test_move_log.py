@@ -6,7 +6,7 @@ from game_engine.move_log import MoveLog
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
 from real_time.real_time_config import LONG_REST_DURATION_MS
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

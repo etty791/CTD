@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.piece import Piece, Color, PieceType
 from model.position import Position
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from game_engine.game import KungFuChessGame
 from input.board_mapper import transfer_pixels_to_data
 from input.controller import handle_click
@@ -30,8 +30,8 @@ def _parse_board(board_str: str):
     for x, row in enumerate(grid_tokens):
         board_row = []
         for y, token in enumerate(row):
-            if token == EMPTY_CELL:
-                board_row.append(EMPTY_CELL)
+            if token == '.':
+                board_row.append(None)
             else:
                 p = Piece(piece_id, token[0], token[1], Position(x, y))
                 piece_id += 1

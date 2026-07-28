@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.piece import Piece, Color, PieceType
 from model.position import Position
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from textTester.parser import (
     parse_input, is_valid_board, create_board,
     create_commands, create_piece_from_string
@@ -35,7 +35,7 @@ def stdin_with(text):
 
 class TestCreatePieceFromString:
     def test_empty_cell_returns_empty(self):
-        assert create_piece_from_string('.', 0, 0, 1) == EMPTY_CELL
+        assert create_piece_from_string('.', 0, 0, 1) is None
 
     def test_white_king(self):
         p = create_piece_from_string('wK', 0, 0, 1)
@@ -107,13 +107,13 @@ class TestCreateBoard:
     def test_empty_cells_are_dot(self):
         lines = make_board_lines(['. .'])
         board = create_board(lines, VALID_TOKENS)
-        assert board[0][0] == EMPTY_CELL and board[0][1] == EMPTY_CELL
+        assert board[0][0] is None and board[0][1] is None
 
     def test_mixed_row(self):
         lines = make_board_lines(['wK . bK'])
         board = create_board(lines, VALID_TOKENS)
         assert board[0][0].type == PieceType.KING
-        assert board[0][1] == EMPTY_CELL
+        assert board[0][1] is None
         assert board[0][2].type == PieceType.KING
 
     def test_invalid_board_exits(self):

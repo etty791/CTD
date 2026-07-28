@@ -122,16 +122,15 @@ class TestSeek:
 
 
 class TestLeave:
-    def test_player_leaving_reports_role_and_remaining(self, manager):
+    def test_player_leaving_reports_remaining(self, manager):
         created = manager.create_room(FakeSession("alice"))
         bob = FakeSession("bob")
         manager.join(created.room.name, bob)
         alice = created.room.players[0]
 
         result = manager.leave(alice)
-        assert result.role == Role.PLAYER
         assert result.room_closed is False
-        assert [s.player_id for s in result.remaining_players] == ["bob"]
+        assert [s.player_id for s in result.room.players] == ["bob"]
 
     def test_last_leaver_closes_room(self, manager):
         created = manager.create_room(FakeSession("alice"))
@@ -140,16 +139,15 @@ class TestLeave:
         assert result.room_closed is True
         assert manager.room_of("alice") is None
 
-    def test_observer_leaving_reports_observer_role(self, manager):
+    def test_observer_leaving_reports_remaining(self, manager):
         created = manager.create_room(FakeSession("alice"))
         manager.join(created.room.name, FakeSession("bob"))
         carol = FakeSession("carol")
         manager.join(created.room.name, carol)
 
         result = manager.leave(carol)
-        assert result.role == Role.OBSERVER
         assert result.room_closed is False
-        assert [s.player_id for s in result.remaining_players] == ["alice", "bob"]
+        assert [s.player_id for s in result.room.players] == ["alice", "bob"]
 
     def test_leaving_a_seeker_cancels_the_seek(self, manager):
         alice = FakeSession("alice")
@@ -160,13 +158,7 @@ class TestLeave:
 
     def test_leave_unknown_session_is_noop(self, manager):
         result = manager.leave(FakeSession("ghost"))
-        assert result == LeaveResult(
-            role=None,
-            room=None,
-            room_closed=False,
-            remaining_players=(),
-            remaining_observers=(),
-        )
+        assert result == LeaveResult(room=None, room_closed=False)
 
 
 class TestRoomOf:

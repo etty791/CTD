@@ -8,6 +8,13 @@ belong here.
 
 from enum import StrEnum
 
+from model.board import BOARD_SIZE
+
+# Board dimensions and time-unit conversion both sides must agree on -
+# view/ and client/ each render from these rather than declaring their own.
+DEFAULT_BOARD_SIZE = BOARD_SIZE
+MS_PER_SECOND = 1000
+
 
 # --- Protocol status values (shared by AUTH / REGISTER / LOGIN acks) ---
 class Status(StrEnum):

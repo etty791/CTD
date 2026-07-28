@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 
 class MessageType(str, Enum):
-    AUTH = "auth"
     REGISTER = "register"
     LOGIN = "login"
     MOVE = "move"
@@ -21,7 +20,6 @@ class MessageType(str, Enum):
     RESIGN = "resign"
     CANCEL_SEEK = "cancel_seek"
     EVENT = "event"
-    CHAT = "chat"
     ERROR = "error"
 
 

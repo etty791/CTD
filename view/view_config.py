@@ -1,9 +1,6 @@
-from model.board import BOARD_SIZE
 from model.piece import State
 from events.game_events import GameStarted, GameEnded, MoveStarted, PieceCaptured
-
-DEFAULT_BOARD_SIZE = BOARD_SIZE
-SQUARE_SIZE=1
+from shared.protocol_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
 
 STATE_ASSET_FOLDER = {
     State.idle: "idle",
@@ -12,9 +9,7 @@ STATE_ASSET_FOLDER = {
     State.long_rest: "long_rest",
     State.short_rest: "short_rest",
 }
-MS_PER_SECOND = 1000
 FRAME_DELAY_MS = 33
-WAIT_TICK_INTERVAL_SECONDS = 1.0
 
 # GameLoop keybindings.
 KEY_QUIT = ord('q')

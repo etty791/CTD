@@ -10,7 +10,7 @@ from game_engine.game import KungFuChessGame
 from events.event_bus import EventBus
 from events.game_events import GameStarted
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

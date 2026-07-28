@@ -1,20 +1,22 @@
+from typing import Optional
+
 from model.piece import Piece, Color, PieceType
 from model.position import Position
-EMPTY_CELL= '.'
+
 BOARD_SIZE = 8
 
 class Board:
     @classmethod
     def generate_standard_grid(cls):
-        grid = [[EMPTY_CELL for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+        grid = [[None for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         piece_id = 1
 
         def place_piece(row, col, color, p_type):
             nonlocal piece_id
             grid[row][col] = Piece(
-                id_num=piece_id, 
-                color=color.value, 
-                type=p_type.value, 
+                id_num=piece_id,
+                color=color.value,
+                type=p_type.value,
                 position=Position(row, col)
             )
             piece_id += 1
@@ -33,26 +35,26 @@ class Board:
             place_piece(7, col, Color.WHITE, back_rank[col])
 
         return grid
-    
+
     def __init__(self, initial_grid):
         self._grid = initial_grid
         self.rows = len(initial_grid)
         self.cols = len(initial_grid[0]) if self.rows > 0 else 0
 
 
-    def get_piece_at(self, position):
+    def get_piece_at(self, position: Position) -> Optional[Piece]:
         return self._grid[position.x][position.y]
 
-    def set_piece_at(self, position, piece):
-        self._grid[position.x][position.y] = piece  
-        if piece != EMPTY_CELL:
-            piece.position = position     
+    def set_piece_at(self, position: Position, piece: Optional[Piece]) -> None:
+        self._grid[position.x][position.y] = piece
+        if piece is not None:
+            piece.position = position
     def is_cell_empty(self, coordinates):
-        return self.get_piece_at(coordinates) == EMPTY_CELL
+        return self.get_piece_at(coordinates) is None
 
     def is_within_boundaries(self, position):
         return 0 <=  position.x< self.rows and 0 <= position.y < self.cols
-    
+
     def move_piece(self, from_pos, to_pos):
         """Relocate the piece at `from_pos` to `to_pos`, overwriting
         whatever was there. Capture bookkeeping (marking a displaced
@@ -62,28 +64,19 @@ class Board:
         calling this."""
         piece = self.get_piece_at(from_pos)
         self.set_piece_at(to_pos, piece)
-        self.set_piece_at(from_pos, EMPTY_CELL)
+        self.set_piece_at(from_pos, None)
         piece.position = to_pos
-        self._apply_promotion(piece)
 
     def place_piece(self, position: Position, piece: Piece) -> None:
-        """Set `position` to hold `piece` (syncing its .position) and
-        apply promotion - used when a mid-flight move lands, so promotion
-        stays in model/ rather than leaking into real_time."""
+        """Set `position` to hold `piece`, syncing its .position. Promotion
+        is a rule, not board state - callers that need it call
+        rules.promotion.is_promotion_square themselves after placing."""
         self.set_piece_at(position, piece)
-        self._apply_promotion(piece)
 
     def is_friendly(self, pos: Position, color: Color) -> bool:
         piece = self.get_piece_at(pos)
-        return piece != EMPTY_CELL and piece.color == color
+        return piece is not None and piece.color == color
 
     def is_enemy(self, pos: Position, color: Color) -> bool:
         piece = self.get_piece_at(pos)
-        return piece != EMPTY_CELL and piece.color != color
-
-    def _apply_promotion(self, piece: Piece) -> None:
-        last_row = 0 if piece.color == Color.WHITE else self.rows - 1
-        if piece.type == PieceType.PAWN and piece.position.x == last_row:
-            piece.type = PieceType.QUEEN
-
-    
+        return piece is not None and piece.color != color

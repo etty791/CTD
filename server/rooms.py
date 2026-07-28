@@ -48,18 +48,10 @@ class RoomJoinResult:
 
 @dataclass(frozen=True)
 class LeaveResult:
-    """What `leave` did, so the handler knows whom to notify.
+    """What `leave` did, so the handler knows whom to notify."""
 
-    `role` is the seat the departing session held (PLAYER/OBSERVER), or None if
-    it was not in any room. `remaining_*` list who is still in the room after
-    the removal (empty when the room was closed).
-    """
-
-    role: Role | None
     room: Room | None
     room_closed: bool
-    remaining_players: tuple[PlayerSession, ...]
-    remaining_observers: tuple[PlayerSession, ...]
 
 
 @dataclass(frozen=True)
@@ -181,33 +173,18 @@ class RoomManager:
         name = self._player_to_room.pop(session.player_id, None)
         room = self._rooms.get(name) if name is not None else None
         if room is None:
-            return LeaveResult(
-                role=None,
-                room=None,
-                room_closed=False,
-                remaining_players=(),
-                remaining_observers=(),
-            )
+            return LeaveResult(room=None, room_closed=False)
 
-        role: Role | None = None
         if session in room.players:
             room.players.remove(session)
-            role = Role.PLAYER
         elif session in room.observers:
             room.observers.remove(session)
-            role = Role.OBSERVER
 
         room_closed = not room.players and not room.observers
         if room_closed:
             self.close_room(name)
 
-        return LeaveResult(
-            role=role,
-            room=room,
-            room_closed=room_closed,
-            remaining_players=tuple(room.players),
-            remaining_observers=tuple(room.observers),
-        )
+        return LeaveResult(room=room, room_closed=room_closed)
 
     def room_of(self, player_id: str) -> Room | None:
         name = self._player_to_room.get(player_id)

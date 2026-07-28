@@ -3,7 +3,7 @@ from model.piece import Piece
 from model.position import Position
 from rules.rules_engine import validate_move
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

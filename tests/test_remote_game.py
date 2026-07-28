@@ -1,6 +1,5 @@
 import pytest
 
-from model.board import EMPTY_CELL
 from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType, State
 from model.position import Position
@@ -32,7 +31,7 @@ from shared.messages import (
     StatePayload,
 )
 from shared.protocol import Envelope, MessageType
-from view.view_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
+from shared.protocol_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
 
 MOVE_START_MS = 1000
 MOVE_DURATION_MS = 2000
@@ -107,7 +106,7 @@ class TestRemoteBoardView:
         assert other.color == Color.BLACK
 
         assert board.is_cell_empty(Position(3, 3))
-        assert board.get_piece_at(Position(3, 3)) is EMPTY_CELL
+        assert board.get_piece_at(Position(3, 3)) is None
 
     def test_tracks_the_current_state(self):
         game = RemoteGame(FakeConnection(), is_observer=False)

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from model.piece import Color
 from model.position import Position
 from game_engine.snapshot import GameSnapshot
@@ -57,7 +57,7 @@ class KungFuChessGame:
         callers (e.g. the server's ownership check) ask this without
         reaching into the board directly."""
         piece = self.board.get_piece_at(pos)
-        return None if piece == EMPTY_CELL else piece.color
+        return None if piece is None else piece.color
 
     def finish_game(self):
         self.game_active = False

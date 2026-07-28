@@ -34,10 +34,6 @@ class PositionPayload(BaseModel):
         return Position(self.x, self.y)
 
 
-class AuthPayload(BaseModel):
-    player_id: str
-
-
 class CredentialsPayload(BaseModel):
     username: str
     password: str

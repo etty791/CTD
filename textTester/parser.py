@@ -1,7 +1,6 @@
 import sys
 from model.piece import Piece
 from model.position import Position
-from model.board import EMPTY_CELL
 from textTester.tester_config import (
     BOARD_SECTION_HEADER,
     COMMANDS_SECTION_HEADER,
@@ -9,6 +8,7 @@ from textTester.tester_config import (
     CMD_JUMP,
     CMD_PRINT,
     CMD_WAIT,
+    EMPTY_TOKEN,
     ERROR_ROW_WIDTH_MISMATCH,
     ERROR_UNKNOWN_TOKEN,
     PRINT_ARG_BOARD,
@@ -78,8 +78,8 @@ def is_valid_board(board,valid):
 
 
 def create_piece_from_string(token, x, y, piece_id_counter):
-    if token == EMPTY_CELL:
-        return EMPTY_CELL
+    if token == EMPTY_TOKEN:
+        return None
     color = token[0]
     type = token[1]
     return Piece(id_num=piece_id_counter, color=color, type=type, position=Position(x, y))
@@ -93,7 +93,7 @@ def create_board(board_lines, valid_tokens):
         board_row = []
         for y, token in enumerate(row):
             piece = create_piece_from_string(token, x, y, piece_id_counter)
-            if piece != EMPTY_CELL:
+            if piece is not None:
                 piece_id_counter += 1
             board_row.append(piece)
         board.append(board_row)

@@ -7,7 +7,6 @@ from model.game_snapshot import PieceDTO
 from shared.messages import (
     IDLE_PROGRESS,
     AuthAckPayload,
-    AuthPayload,
     CredentialsPayload,
     GameOverPayload,
     GameStartPayload,
@@ -39,16 +38,6 @@ def sample_piece_dto():
         move_start_ms=MOVE_START_MS,
         move_arrival_ms=MOVE_ARRIVAL_MS,
     )
-
-
-class TestAuthPayload:
-    def test_valid_payload_parses(self):
-        payload = AuthPayload.model_validate({"player_id": "p1"})
-        assert payload.player_id == "p1"
-
-    def test_missing_player_id_raises_validation_error(self):
-        with pytest.raises(ValidationError):
-            AuthPayload.model_validate({})
 
 
 class TestMovePayload:

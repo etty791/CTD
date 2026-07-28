@@ -35,7 +35,6 @@ from events.game_events import (
     PieceCaptured,
     RestEnded,
 )
-from model.board import EMPTY_CELL
 from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType
 from model.position import Position
@@ -49,7 +48,7 @@ from shared.messages import (
     StatePayload,
 )
 from shared.protocol import Envelope, MessageType
-from view.view_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
+from shared.protocol_config import DEFAULT_BOARD_SIZE, MS_PER_SECOND
 
 OBSERVER_CANNOT_MOVE_REASON = "observer_cannot_move"
 MOVE_OK_REASON = "ok"
@@ -204,8 +203,8 @@ class RemoteBoardView:
     def is_cell_empty(self, pos: Position) -> bool:
         return pos not in self._current_state().by_position
 
-    def get_piece_at(self, pos: Position) -> PieceDTO | str:
-        return self._current_state().by_position.get(pos, EMPTY_CELL)
+    def get_piece_at(self, pos: Position) -> PieceDTO | None:
+        return self._current_state().by_position.get(pos)
 
 
 class RemoteGame:

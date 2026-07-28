@@ -6,7 +6,7 @@ from game_engine.score_tracker import ScoreTracker
 from events.event_bus import EventBus
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

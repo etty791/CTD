@@ -12,7 +12,7 @@ from real_time.real_time_arbiter import (
     SHORT_REST_DURATION_MS,
 )
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

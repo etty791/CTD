@@ -67,9 +67,3 @@ class PieceCaptured:
     color: Color
     position: Position
     capturing_move_id: int
-
-
-@dataclass(frozen=True)
-class ScoreChanged:
-    color: Color
-    score: int

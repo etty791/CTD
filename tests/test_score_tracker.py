@@ -2,12 +2,11 @@ from model.board import Board
 from model.piece import Piece, Color
 from model.position import Position
 from events.event_bus import EventBus
-from events.game_events import ScoreChanged
 from game_engine.score_tracker import ScoreTracker
 from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
 from real_time.real_time_config import LONG_REST_DURATION_MS
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):
@@ -62,19 +61,6 @@ class TestScoreTracker:
             arb.add_move(rook, pos(0, 0), pos(0, 3))
             arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
             assert scores.get_score(Color.WHITE) == value, f"{type_name} should award {value}"
-
-    def test_capture_publishes_score_changed_with_cumulative_score(self):
-        b = empty_board()
-        rook = place(b, "WHITE", "ROOK", 0, 0)
-        place(b, "BLACK", "QUEEN", 0, 3)
-        bus = EventBus()
-        received = []
-        bus.subscribe(ScoreChanged, received.append)
-        ScoreTracker(bus)
-        arb = RealTimeArbiter(b, bus)
-        arb.add_move(rook, pos(0, 0), pos(0, 3))
-        arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
-        assert received == [ScoreChanged(Color.WHITE, 9)]
 
     def test_cumulative_score_across_multiple_captures(self):
         b = empty_board()

@@ -1,6 +1,6 @@
 from model.piece import Color
 from events.event_bus import EventBus
-from events.game_events import PieceCaptured, ScoreChanged
+from events.game_events import PieceCaptured
 from game_engine.score_config import PIECE_VALUES
 
 
@@ -12,7 +12,6 @@ class ScoreTracker:
     def __init__(self, event_bus: EventBus):
         self._scores: dict[Color, int] = {Color.WHITE: 0, Color.BLACK: 0}
         event_bus.subscribe(PieceCaptured, self._on_piece_captured)
-        self._event_bus = event_bus
 
     def get_score(self, color: Color) -> int:
         return self._scores[color]
@@ -23,4 +22,3 @@ class ScoreTracker:
             return
         capturing_color = Color.BLACK if event.color == Color.WHITE else Color.WHITE
         self._scores[capturing_color] += value
-        self._event_bus.publish(ScoreChanged(capturing_color, self._scores[capturing_color]))

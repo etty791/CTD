@@ -1,9 +1,9 @@
 import pytest
 from model.board import Board
-from model.piece import Piece, Color, PieceType, State
+from model.piece import Piece, Color, State
 from model.position import Position
 
-EMPTY = '.'
+EMPTY = None
 
 def make_empty_board(rows=8, cols=8):
     return Board([[EMPTY] * cols for _ in range(rows)])
@@ -67,13 +67,6 @@ def test_place_piece_sets_cell_and_position():
     board.place_piece(Position(4, 4), piece)
     assert board.get_piece_at(Position(4, 4)) is piece
     assert piece.position == Position(4, 4)
-
-def test_place_piece_applies_promotion():
-    board = make_empty_board()
-    pawn = make_piece("WHITE", "PAWN", 1, 0)
-    board.place_piece(Position(0, 0), pawn)
-    assert pawn.type == PieceType.QUEEN
-    assert board.get_piece_at(Position(0, 0)) is pawn
 
 def test_is_friendly():
     board = make_empty_board()
