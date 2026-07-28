@@ -36,6 +36,17 @@ class TestValidateMove:
         result = validate_move(b, pos(0, 0), pos(3, 3))
         assert not result.is_valid and result.reason == "illegal_piece_move"
 
+    def test_out_of_bounds_source_rejected(self):
+        b = empty_board()
+        result = validate_move(b, pos(-1, 0), pos(0, 0))
+        assert not result.is_valid and result.reason == "out_of_bounds"
+
+    def test_out_of_bounds_destination_rejected(self):
+        b = empty_board()
+        place(b, "WHITE", "ROOK", 0, 0)
+        result = validate_move(b, pos(0, 0), pos(8, 0))
+        assert not result.is_valid and result.reason == "out_of_bounds"
+
     def test_rook_blocked_by_friendly(self):
         b = empty_board()
         place(b, "WHITE", "ROOK", 0, 0)

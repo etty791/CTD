@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -15,6 +16,8 @@ from server.server_config import (
     WS_PATH,
 )
 import server.handlers as handlers  # noqa: F401 -- import registers handlers with the dispatcher
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -54,6 +57,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
             await dispatch(conn, envelope)
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("%s crashed", conn.id)
+    finally:
         manager.remove(conn.id)
         session = conn.player_session
         if session is not None:

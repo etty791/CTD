@@ -14,6 +14,7 @@ End-of-game state machine (two idempotent gates):
 """
 
 import asyncio
+import logging
 import uuid
 from concurrent.futures import Future
 from typing import Awaitable, Callable, Optional
@@ -31,6 +32,8 @@ from server.persistence.worker import PersistenceWorker
 from shared.protocol import Envelope, MessageType
 from server.server_config import GAME_OVER_REASON_KING_CAPTURED
 from server.session import PlayerSession
+
+logger = logging.getLogger(__name__)
 
 FinalizeCallback = Callable[["GameSession"], Awaitable[None]]
 
@@ -159,21 +162,25 @@ class GameSession:
 
         rating_changes: list[RatingChangePayload] = []
         if self._elo_future is not None:
-            ratings = await asyncio.wrap_future(self._elo_future)
-            white_username = self.username_of_color(Color.WHITE)
-            black_username = self.username_of_color(Color.BLACK)
-            rating_changes = [
-                RatingChangePayload(
-                    username=white_username,
-                    old_rating=ratings.white_old,
-                    new_rating=ratings.white_new,
-                ),
-                RatingChangePayload(
-                    username=black_username,
-                    old_rating=ratings.black_old,
-                    new_rating=ratings.black_new,
-                ),
-            ]
+            try:
+                ratings = await asyncio.wrap_future(self._elo_future)
+            except Exception:
+                logger.exception("Elo update failed for game %s", self.id)
+            else:
+                white_username = self.username_of_color(Color.WHITE)
+                black_username = self.username_of_color(Color.BLACK)
+                rating_changes = [
+                    RatingChangePayload(
+                        username=white_username,
+                        old_rating=ratings.white_old,
+                        new_rating=ratings.white_new,
+                    ),
+                    RatingChangePayload(
+                        username=black_username,
+                        old_rating=ratings.black_old,
+                        new_rating=ratings.black_new,
+                    ),
+                ]
 
         payload = GameOverPayload(
             winner=self._winner.value,

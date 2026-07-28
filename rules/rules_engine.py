@@ -49,8 +49,8 @@ def validate_piece_move(
 def validate_move(
         board: Board, source: Position, destination: Position
     ) -> MoveValidation:
-        # if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
-        #     return MoveValidation(False, "outside_board")
+        if not board.is_within_boundaries(source) or not board.is_within_boundaries(destination):
+            return MoveValidation(False, MoveReason.OUT_OF_BOUNDS)
 
         if board.is_cell_empty(source):
             return MoveValidation(False, MoveReason.EMPTY_SOURCE)

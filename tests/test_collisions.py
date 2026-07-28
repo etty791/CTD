@@ -946,14 +946,6 @@ class TestTimingAndArrivalEdgeCases:
         assert wr.state == State.idle
         assert b.get_piece_at(pos(0, 19)) == wr
 
-    @pytest.mark.xfail(
-        reason="RealTimeArbiter._resolve_path_collisions resolves the "
-               "eventual outcome of a crossing pair as soon as both moves "
-               "are pending, instead of waiting for the clock to actually "
-               "reach the collision point - a known timing bug, out of "
-               "scope for this fix.",
-        strict=True,
-    )
     def test_very_tiny_time_increment_no_collision(self):
         """Very small time advances shouldn't cause a false collision."""
         b = make_board(1, 10)

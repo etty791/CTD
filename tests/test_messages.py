@@ -68,6 +68,11 @@ class TestPositionPayload:
         payload = PositionPayload.from_position(Position(3, 4))
         assert payload.to_position() == Position(3, 4)
 
+    @pytest.mark.parametrize("x, y", [(-1, 0), (0, -1), (8, 0), (0, 8)])
+    def test_rejects_out_of_bounds_coordinates(self, x, y):
+        with pytest.raises(ValidationError):
+            PositionPayload(x=x, y=y)
+
 
 class TestPiecePayload:
     def test_from_piece_dto_mirrors_dto_fields(self):

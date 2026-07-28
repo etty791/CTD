@@ -11,14 +11,15 @@ from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from model.board import BOARD_SIZE
 from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType, State
 from model.position import Position
 
 
 class PositionPayload(BaseModel):
-    x: int
-    y: int
+    x: int = Field(ge=0, lt=BOARD_SIZE)
+    y: int = Field(ge=0, lt=BOARD_SIZE)
 
     @classmethod
     def from_position(cls, position: Position) -> "PositionPayload":

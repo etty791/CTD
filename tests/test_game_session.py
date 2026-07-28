@@ -61,6 +61,15 @@ class FakePersistence:
         return future
 
 
+class FailingPersistence:
+    """Returns a Future whose result raises, simulating a broken Elo job."""
+
+    def submit(self, fn) -> Future:
+        future: Future = Future()
+        future.set_exception(RuntimeError("db exploded"))
+        return future
+
+
 async def flush_tasks():
     """Deterministically run every task scheduled via create_task to completion."""
     pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -190,6 +199,19 @@ class TestFinalize:
             assert by_user["white"]["new_rating"] == 1216
             assert by_user["black"]["new_rating"] == 1184
         assert on_finalize_calls == [session]
+
+    async def test_elo_failure_still_sends_game_over_with_no_rating_changes(self):
+        session, conn_a, conn_b = build_session(persistence=FailingPersistence())
+
+        session._on_game_ended(GameEnded(Color.WHITE))
+        await session._finalize(GAME_OVER_REASON_KING_CAPTURED)
+
+        assert session._finalized is True
+        for conn in (conn_a, conn_b):
+            envelope = conn.sent[-1]
+            assert envelope.type == MessageType.GAME_OVER
+            assert envelope.payload["winner"] == Color.WHITE.value
+            assert envelope.payload["rating_changes"] == []
 
     async def test_finalize_is_idempotent(self):
         session, conn_a, _ = build_session()

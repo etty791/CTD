@@ -395,8 +395,13 @@ class RealTimeArbiter:
             outcome = fate.get(id(move))
             if outcome is None:
                 continue
-            _, kind, payload = outcome
+            resolution_time, kind, payload = outcome
             if kind == _CollisionOutcome.CAPTURE:
+                if resolution_time > self.clock:
+                    # The paths cross, but the pieces haven't actually
+                    # reached the shared cell yet - re-derived and applied
+                    # once self.clock catches up to resolution_time.
+                    continue
                 path, cell, capturing_move_id = payload
                 king_captured = self._capture_in_flight(move, capturing_move_id) or king_captured
             else:

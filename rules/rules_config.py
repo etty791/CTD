@@ -16,3 +16,4 @@ class MoveReason(StrEnum):
     PIECE_RESTING = "piece_resting"
     INVALID_MOVE = "invalid_move"
     INVALID_JUMP = "invalid_jump"
+    OUT_OF_BOUNDS = "out_of_bounds"
