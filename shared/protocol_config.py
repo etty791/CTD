@@ -29,7 +29,13 @@ class Role(StrEnum):
 
 
 # --- Room lifecycle (RoomWaitingPayload.status) ---
-ROOM_STATUS_WAITING = "waiting"
+class RoomStatus(StrEnum):
+    WAITING = "waiting"
+    LIVE = "live"
+    ENDED = "ended"
+
+
+ROOM_STATUS_WAITING = RoomStatus.WAITING
 
 # How long the server searches for an ELO-matched opponent before giving up.
 # The client sizes its own `play` wait from this, so it must not drift.

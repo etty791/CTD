@@ -18,12 +18,12 @@ class TestConnectionSend:
     async def test_send_delivers_envelope(self):
         ws = FakeWebSocket()
         conn = Connection(ws)
-        envelope = Envelope(type=MessageType.STATE, payload={"pieces": [], "scores": {}})
+        envelope = Envelope(type=MessageType.KEYFRAME, payload={"pieces": [], "scores": {}})
 
         await conn.send(envelope)
 
         assert len(ws.frames) == 1
-        assert Envelope.model_validate_json(ws.frames[0]).type == MessageType.STATE
+        assert Envelope.model_validate_json(ws.frames[0]).type == MessageType.KEYFRAME
 
     async def test_send_error_goes_through_send(self):
         ws = FakeWebSocket()
@@ -36,6 +36,15 @@ class TestConnectionSend:
         assert decoded.type == MessageType.ERROR
         assert decoded.payload["message"] == "boom"
 
+    async def test_send_raw_delivers_a_pre_serialized_frame(self):
+        ws = FakeWebSocket()
+        conn = Connection(ws)
+        body = Envelope(type=MessageType.DELTA, payload={"ops": []}).model_dump_json()
+
+        await conn.send_raw(body, MessageType.DELTA)
+
+        assert ws.frames == [body]
+
     def test_connection_exposes_a_send_lock(self):
         conn = Connection(FakeWebSocket())
         assert isinstance(conn._send_lock, asyncio.Lock)
@@ -44,7 +53,7 @@ class TestConnectionSend:
         ws = FakeWebSocket()
         conn = Connection(ws)
         envelopes = [
-            Envelope(type=MessageType.STATE, payload={"pieces": [], "scores": {}})
+            Envelope(type=MessageType.KEYFRAME, payload={"pieces": [], "scores": {}})
             for _ in range(5)
         ]
 

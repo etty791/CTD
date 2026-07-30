@@ -37,15 +37,15 @@ architecture bends; only the fleet size does.
 | I4 closed-form time | ✅ `_time_at_cell` | — |
 | I5 absolute times on wire | ✅ `move_start_ms`/`move_arrival_ms` | — |
 | I3 / I6 / I2 / I7 | ✅ | — |
-| Delta encoding, keyframes, seq/resync | ❌ full 1.5 KB state per change | 1 |
+| Delta encoding, keyframes, seq/resync | ✅ `shared/delta_ops.py` + `server/delta.py` | — |
 | Discrete-event scheduler | ❌ 50 ms tick per game | 2 |
 | Language-neutral schema | ❌ hand-written pydantic | 3 |
 | Tier separation, NATS, Redis, PG | ❌ one process, sqlite | 4 |
 | JWT / Ed25519 / scrypt N=2^13 | ❌ password over WS, sqlite scrypt | 4 |
 | Pause-by-offset, 10 s budget | ❌ instant forfeit (`server/main.py:57`) | 2 |
-| Band widening ±100→±400 | ❌ fixed ±100 (`server/rooms.py:152`) | 0 |
-| 16-char room codes + claim FSM | ❌ 6 chars (`server/server_config.py:19`) | 0 / 4 |
-| Instrumentation | ❌ none | 0 |
+| Band widening ±100→±400 | ✅ `server/rooms.py` `_band_for` | — |
+| 16-char room codes + claim FSM | ✅ `ROOM_ID_LENGTH=16`, `RoomStatus` FSM | — |
+| Instrumentation | ✅ `observability/` + bench harness | — |
 | Spectator relays, lazy `spec.*`/`kf.*` | ❌ observers fan out from the game itself | 5 |
 | PG sharding, identity table, retention | ❌ one sqlite file | 6 |
 | Regions | ❌ none | 7 |
@@ -86,6 +86,42 @@ input to every phase-4 sizing decision.
   single-threaded `RoomManager` the claim is trivially atomic; phase 4 swaps the same predicate
   for Redis `HSETNX` without changing the caller. Also encodes spec §7's hard invariant: **a
   spectator is never promoted to a player.**
+
+**Status: done.** Landed as: `observability/metrics.py` + `observability/metrics_config.py` (a
+cardinality-disciplined counter/histogram registry, `FORBIDDEN_LABELS` rejecting
+`game_id`/`user_id`/`session_id` at registration); four instrumentation seams
+(`RealTimeArbiter._publish`/`add_move`/`add_jump`, `AsyncClock._record_lag`/`every`,
+`GameSession._mark_dirty`/`broadcast_state`, `Connection.send`); `bench/frames_per_game.py`
+(headless, deterministic, reuses `server/encoding.py` and `server/game_session.py`'s own
+`STATE_CHANGING_EVENTS` so the coalescing ratio measured is the real one); the widening Elo band
+(`server/rooms.py` `_band_for`, evaluated only on new-seek arrival per the decision taken with the
+user - no re-sweep timer), `ROOM_ID_LENGTH` 16, and the `RoomStatus` FSM (shared enum in
+`shared/protocol_config.py`) with the idempotent seat-2 claim. 585 tests pass (546 → 585: 39 new,
+zero deleted).
+
+**Baseline (`bench/baseline.json`, 200 games, 90 s horizon, seed 42 — reproducible: two runs
+diff identical):**
+
+| Metric | Value |
+|---|---|
+| frames/s/game | 1.76 |
+| bytes/frame (p50 / p99 / mean) | 4996 / 5329 / 4801 |
+| bytes/s/game | 8428 |
+| events/frame (coalescing ratio) | 1.56 |
+| tracemalloc bytes/live game | 44.6 KB |
+| arbiter events/move | ~3.07 (49384 events / 16092 moves) |
+
+Two numbers correct assumptions elsewhere in this document: frames/s/game (1.76) is *lower* than
+the assumed 3, and bytes/frame (4801) is over 3x the assumed ~1.5 KB — `StatePayload` sends every
+piece every frame, not a diff, so full-board JSON is heavier than estimated. Phase 1's delta
+protocol has more headroom than assumed, not less. Arbiter events/move (~3.07) lands close enough
+to the spec's ~4/move estimate to leave phase 2's design unchanged. `game_frames_total`,
+`game_state_events_total`, `drain_loop_lag_seconds` and `game_frame_bytes` all read empty in the
+metrics dump above: the bench drives `KungFuChessGame` directly and never touches `GameSession`,
+`Connection`, or `AsyncClock`, so those seams only populate under `server/main.py`, not under the
+bench. `Connection.send`'s per-recipient `model_dump_json()` (noted in the instrumentation
+section above) was measured, not fixed — real fan-out bytes are higher than this single-recipient
+bench, and collapsing it is explicitly a phase-1 concern.
 
 ---
 
@@ -138,6 +174,49 @@ whole-frame replacement; it becomes a keyframe-seeded state that applies delta o
 `_pending_state` hold-and-replay logic keeps working, now holding a keyframe. `view/` and `input/`
 are untouched — `RemoteGameState.get_all_pieces()` keeps recomputing `progress` from absolute
 times, so rendering is unaffected.
+
+**Status: done.** Landed as: `shared/delta_ops.py` (op codes + positional-array layout, shared by
+both sides); `server/delta.py` (`DeltaBuilder`, subscribing to the same `STATE_CHANGING_EVENTS`);
+`server/encoding.py` reshaped from `_EVENT_ENCODERS` into `op_from_event` +
+`keyframe_payload_from_snapshot`; `Envelope.seq`, `KEYFRAME`/`DELTA`/`RESYNC` replacing
+`STATE`/`EVENT`; `GameSession._seq`/`flush_frame`/`keyframe_envelope`/`broadcast_keyframe` with
+`_fan_out` serializing once per frame instead of once per recipient (`Connection.send_raw`); the
+`FRAME_MIN_INTERVAL_MS = 10` cap; `MAX_STATE_INTERVAL_MS` deleted; `handle_resync`; and on the
+client, keyframe-seeded copy-on-write state applying ops in `client/remote_game.py` with seq-gap
+detection and RESYNC in `client/network.py`. 629 tests pass (607 → 629 after the phase-1 additions;
+`tests/test_delta.py` is new and carries the equivalence harness).
+
+Three deliberate departures from the sketch above, taken with the user:
+- **One op per event (7 ops), not the 5-op table.** The table folded `MoveStarted`/`MoveTruncated`/
+  `MoveAborted` into one `m` op and omitted `MoveCompleted` entirely, but those events don't map
+  that way: `MoveCompleted` carries the post-promotion piece type (the only way a piece's type ever
+  changes), and `MoveTruncated` has two opposite meanings (still travelling toward a nearer target,
+  vs. the move is over and the piece has already retreated onto that cell). 1:1 ops also make the
+  client's op→event republish — what keeps `SoundPlayer` working — a direct table lookup.
+- **`Envelope` gains `seq` only.** `session_id`/`client_ts` and the keyframe's `phase` have no
+  producer until phases 4 and 2 respectively; adding them now would put dead fields on every frame.
+  Both are additive when their phase arrives.
+- **Client state is copy-on-write, not mutated in place.** Each delta builds a new frozen
+  `RemoteGameState` from the previous one, which keeps today's lock-free network-thread/render-thread
+  split intact; at ~32 pieces and under 2 frames/s the copy is free.
+
+Two arbiter-side changes were needed to make ops encodable at all: `MoveStarted` now carries
+`start_time_ms`/`arrival_time_ms` (so the encoder never re-derives travel timing, which is the
+arbiter's business), and `MoveTruncated` carries `in_flight` to tell its two meanings apart.
+
+**Phase 1 measured (`bench/phase1.json`, same 200 games / 90 s / seed 42, two runs diff identical):**
+
+| Metric | Phase 0 | Phase 1 | Change |
+|---|---|---|---|
+| bytes/frame (p50 / p99 / mean) | 4996 / 5329 / 4801 | 118 / 178 / 124 | **39x smaller** |
+| bytes/s/game | 8428 | 218 | **39x smaller** |
+| frames/s/game | 1.76 | 1.76 | unchanged |
+| events/frame | 1.56 | 1.61 | unchanged |
+| tracemalloc bytes/live game | 44.6 KB | 40.3 KB | -10% |
+
+p50 118 B lands inside the spec §10 band of 105–150 B per move frame. frames/s/game is unchanged
+because the phase-0 script was busy enough that the heartbeat rarely fired; on a genuinely idle
+board the rate is now zero rather than 1/s.
 
 ---
 
@@ -384,7 +463,7 @@ independently survivable.
 
 ## Verification
 
-Each phase must leave the suite green (546 passing today) and the system end-to-end playable.
+Each phase must leave the suite green (629 passing as of phase 1) and the system end-to-end playable.
 
 - **Every phase:** `.venv\Scripts\python.exe -m pytest`.
 - **Phase 0:** `python bench/frames_per_game.py` prints frames/s/game, bytes/frame, bytes/game.
@@ -429,8 +508,8 @@ entry criteria below before planning, because earlier phases will have moved the
 
 | Phase | Status | Entry criteria | Done when |
 |---|---|---|---|
-| 0 | not started | none | bench prints real frames/s/game and bytes/frame; band widening, 16-char codes and the room FSM are in with tests |
-| 1 | not started | phase 0's byte baseline recorded | a move produces one delta frame; seq gap → RESYNC → keyframe recovers; `EVENT` channel deleted; client renders and plays sound from deltas |
+| 0 | done | none | bench prints real frames/s/game and bytes/frame; band widening, 16-char codes and the room FSM are in with tests |
+| 1 | done | phase 0's byte baseline recorded | a move produces one delta frame; seq gap → RESYNC → keyframe recovers; `EVENT` channel deleted; client renders and plays sound from deltas |
 | 2 | not started | phase 1 done (keyframes exist for resume) | equivalence harness green over randomized scripts; existing arbiter/collision tests pass *unmodified*; `GameShard` replaces per-game tick tasks; 10 s pause budget works end to end |
 | 3 | not started | phase 1 done (protocol has stopped moving) | schema is the source of truth; drift test green; handshake negotiates a major version |
 | 4 | not started | phases 1–3 done | seven services under compose; full suite green on the in-process bus adapter; import-boundary test green; `server/main.py` retired |

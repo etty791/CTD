@@ -3,8 +3,12 @@ import uuid
 
 from fastapi import WebSocket
 
+from observability.metrics import histogram
+from observability.metrics_config import BYTE_BUCKETS, GAME_FRAME_BYTES, LABEL_TYPE
 from shared.messages import ErrorPayload
 from shared.protocol import Envelope, MessageType
+
+_game_frame_bytes = histogram(GAME_FRAME_BYTES, (LABEL_TYPE,), buckets=BYTE_BUCKETS)
 
 
 class Connection:
@@ -18,8 +22,15 @@ class Connection:
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: Envelope) -> None:
+        await self.send_raw(envelope.model_dump_json(), envelope.type)
+
+    async def send_raw(self, body: str, message_type: MessageType) -> None:
+        """Send an already-serialized envelope. A frame fanned out to several
+        recipients is serialized once by the caller and sent through here,
+        rather than re-encoded per socket."""
         async with self._send_lock:
-            await self.websocket.send_text(envelope.model_dump_json())
+            _game_frame_bytes.observe(len(body.encode()), type=message_type.value)
+            await self.websocket.send_text(body)
 
     async def send_error(self, message: str) -> None:
         await self.send(Envelope(type=MessageType.ERROR, payload=ErrorPayload(message=message).model_dump()))

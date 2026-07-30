@@ -17,7 +17,8 @@ from shared.messages import (
     PositionPayload,
     RatingChangePayload,
     RoomWaitingPayload,
-    StatePayload,
+    KeyframePayload,
+    DeltaPayload,
 )
 
 
@@ -117,19 +118,32 @@ class TestPiecePayload:
         assert payload.to_piece_dto().move_start_ms is None
 
 
-class TestStatePayload:
+class TestKeyframePayload:
     def test_round_trips_through_json(self):
-        payload = StatePayload(
+        payload = KeyframePayload(
             pieces=[PiecePayload.from_piece_dto(sample_piece_dto())],
             scores={"w": 1, "b": 0},
             server_time_ms=2500,
         )
 
-        restored = StatePayload.model_validate_json(payload.model_dump_json())
+        restored = KeyframePayload.model_validate_json(payload.model_dump_json())
 
         assert restored == payload
         assert restored.server_time_ms == 2500
         assert set(payload.model_dump().keys()) == {"pieces", "scores", "server_time_ms"}
+
+
+class TestDeltaPayload:
+    def test_round_trips_through_json(self):
+        payload = DeltaPayload(ops=[["m", 7, 1, 6, 0, 5, 0, 0, 1000]], server_time_ms=2500)
+
+        restored = DeltaPayload.model_validate_json(payload.model_dump_json())
+
+        assert restored == payload
+        assert set(payload.model_dump().keys()) == {"ops", "server_time_ms"}
+
+    def test_defaults_to_no_ops(self):
+        assert DeltaPayload().ops == []
 
 
 class TestCredentialsPayload:

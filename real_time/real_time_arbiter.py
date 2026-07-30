@@ -17,6 +17,11 @@ from events.game_events import (
     PieceCaptured,
     RestEnded,
 )
+from observability.metrics import counter
+from observability.metrics_config import ARBITER_EVENTS_TOTAL, ARBITER_MOVES_TOTAL, LABEL_EVENT
+
+_arbiter_events_total = counter(ARBITER_EVENTS_TOTAL, (LABEL_EVENT,))
+_arbiter_moves_total = counter(ARBITER_MOVES_TOTAL)
 
 REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
@@ -106,6 +111,7 @@ class RealTimeArbiter:
     def _publish(self, event) -> None:
         """No-op when no event_bus was provided, so callers/tests never
         have to construct one just to use the arbiter."""
+        _arbiter_events_total.inc(event=type(event).__name__)
         if self.event_bus is not None:
             self.event_bus.publish(event)
 
@@ -173,7 +179,10 @@ class RealTimeArbiter:
         move = Move(piece, origin, target, arrival_time, self.clock, self._new_move_id())
         piece.state = State.moving
         self.pending_moves.append(move)
-        self._publish(MoveStarted(move.move_id, piece.id, origin, target))
+        _arbiter_moves_total.inc()
+        self._publish(MoveStarted(
+            move.move_id, piece.id, origin, target, move.start_time, move.arrival_time,
+        ))
         return True
 
     def add_jump(self, piece, pos):
@@ -183,7 +192,10 @@ class RealTimeArbiter:
         move = Move(piece, pos, pos, arrival_time, self.clock, self._new_move_id())
         piece.state = State.airborne
         self.pending_moves.append(move)
-        self._publish(MoveStarted(move.move_id, piece.id, pos, pos))
+        _arbiter_moves_total.inc()
+        self._publish(MoveStarted(
+            move.move_id, piece.id, pos, pos, move.start_time, move.arrival_time,
+        ))
         return True
     
     def advance_time(self, ms):
@@ -292,7 +304,9 @@ class RealTimeArbiter:
             if self.board.is_cell_empty(cell):
                 self._place_piece(cell, move.piece)
                 self._begin_rest(move.piece, State.long_rest, move.arrival_time)
-                self._publish(MoveTruncated(move.move_id, move.piece.id, cell, move.arrival_time))
+                self._publish(MoveTruncated(
+                    move.move_id, move.piece.id, cell, move.arrival_time, in_flight=False,
+                ))
                 return
         # Not believed reachable (the origin is always a candidate and,
         # per the vacate proof, is free unless something else has already
@@ -474,7 +488,7 @@ class RealTimeArbiter:
             self.pending_moves.remove(move)
             return
         self._publish(MoveTruncated(
-            move.move_id, move.piece.id, move.target, move.arrival_time,
+            move.move_id, move.piece.id, move.target, move.arrival_time, in_flight=True,
         ))
 
     # ------------------------------------------------------------------

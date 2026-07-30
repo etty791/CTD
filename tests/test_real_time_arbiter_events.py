@@ -45,7 +45,9 @@ class TestMoveStarted:
         bus.subscribe(MoveStarted, received.append)
         arb = RealTimeArbiter(b, bus)
         arb.add_move(rook, pos(0, 0), pos(0, 3))
-        assert received == [MoveStarted(1, rook.id, pos(0, 0), pos(0, 3))]
+        assert received == [
+            MoveStarted(1, rook.id, pos(0, 0), pos(0, 3), 0, 3 * DEFAULT_MOVE_DELAY_MS)
+        ]
 
     def test_add_jump_publishes_move_started(self):
         b = empty_board()
@@ -55,7 +57,9 @@ class TestMoveStarted:
         bus.subscribe(MoveStarted, received.append)
         arb = RealTimeArbiter(b, bus)
         arb.add_jump(knight, pos(0, 0))
-        assert received == [MoveStarted(1, knight.id, pos(0, 0), pos(0, 0))]
+        assert received == [
+            MoveStarted(1, knight.id, pos(0, 0), pos(0, 0), 0, DEFAULT_MOVE_DELAY_MS)
+        ]
 
     def test_rejected_move_does_not_publish(self):
         b = empty_board()
@@ -166,7 +170,7 @@ class TestMoveTruncated:
         arb.advance_time(1)
 
         assert received == [
-            MoveTruncated(2, late.id, pos(1, 3), 4 * DEFAULT_MOVE_DELAY_MS)
+            MoveTruncated(2, late.id, pos(1, 3), 4 * DEFAULT_MOVE_DELAY_MS, in_flight=True)
         ]
 
     def test_unobstructed_move_publishes_nothing(self):
@@ -207,7 +211,9 @@ class TestMoveAborted:
         arb.advance_time(DEFAULT_MOVE_DELAY_MS)
 
         assert aborted == []
-        assert truncated == [MoveTruncated(1, rook.id, pos(0, 0), arb.clock)]
+        assert truncated == [
+            MoveTruncated(1, rook.id, pos(0, 0), arb.clock, in_flight=False)
+        ]
         assert b.get_piece_at(pos(0, 0)) is rook
 
     def test_multi_square_invalidation_publishes_truncated_not_aborted(self):
@@ -229,7 +235,9 @@ class TestMoveAborted:
         arb.advance_time(3 * DEFAULT_MOVE_DELAY_MS)
 
         assert aborted == []
-        assert truncated == [MoveTruncated(1, rook.id, pos(0, 2), arb.clock)]
+        assert truncated == [
+            MoveTruncated(1, rook.id, pos(0, 2), arb.clock, in_flight=False)
+        ]
         assert b.get_piece_at(pos(0, 2)) is rook
 
     def test_move_blocked_before_its_first_step_publishes_aborted(self):

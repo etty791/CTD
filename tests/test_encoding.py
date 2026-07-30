@@ -1,4 +1,5 @@
 from events.game_events import (
+    GameEnded,
     MoveAborted,
     MoveCompleted,
     MoveStarted,
@@ -9,12 +10,9 @@ from events.game_events import (
 from model.game_snapshot import PieceDTO
 from model.piece import Color, PieceType, State
 from model.position import Position
-from server.encoding import event_payload_from, state_payload_from_snapshot
-
-
-MOVE_START_MS = 1000
-MOVE_ARRIVAL_MS = 4000
-SNAPSHOT_CLOCK_MS = 2500
+from shared.delta_ops import OpCode
+from shared.messages import DeltaPayload
+from server.encoding import keyframe_payload_from_snapshot, op_from_event, scores_op
 
 
 MOVE_START_MS = 1000
@@ -55,11 +53,11 @@ class FakeSnapshot:
         return self._clock_ms
 
 
-class TestStatePayloadFromSnapshot:
+class TestKeyframePayloadFromSnapshot:
     def test_mirrors_snapshot(self):
         snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 1, Color.BLACK: 0})
 
-        payload = state_payload_from_snapshot(snapshot)
+        payload = keyframe_payload_from_snapshot(snapshot)
 
         assert payload.scores == {"w": 1, "b": 0}
         assert len(payload.pieces) == 1
@@ -70,7 +68,7 @@ class TestStatePayloadFromSnapshot:
             pieces=[sample_piece_dto()], scores={Color.WHITE: 0, Color.BLACK: 0}
         )
 
-        payload = state_payload_from_snapshot(snapshot)
+        payload = keyframe_payload_from_snapshot(snapshot)
 
         assert payload.server_time_ms == SNAPSHOT_CLOCK_MS
         assert payload.pieces[0].move_start_ms == MOVE_START_MS
@@ -82,7 +80,7 @@ class TestStatePayloadFromSnapshot:
         resting.move_arrival_ms = None
         snapshot = FakeSnapshot(pieces=[resting], scores={Color.WHITE: 0, Color.BLACK: 0})
 
-        payload = state_payload_from_snapshot(snapshot)
+        payload = keyframe_payload_from_snapshot(snapshot)
 
         assert payload.pieces[0].move_start_ms is None
         assert payload.pieces[0].move_arrival_ms is None
@@ -90,70 +88,97 @@ class TestStatePayloadFromSnapshot:
     def test_dumps_to_json_serialisable_shape(self):
         snapshot = FakeSnapshot(pieces=[sample_piece_dto()], scores={Color.WHITE: 0, Color.BLACK: 0})
 
-        dumped = state_payload_from_snapshot(snapshot).model_dump()
+        dumped = keyframe_payload_from_snapshot(snapshot).model_dump()
 
         assert set(dumped.keys()) == {"pieces", "scores", "server_time_ms"}
         assert dumped["pieces"][0]["position"] == {"x": 0, "y": 0}
 
     def test_empty_snapshot_encodes_to_empty_pieces(self):
-        payload = state_payload_from_snapshot(
+        payload = keyframe_payload_from_snapshot(
             FakeSnapshot(pieces=[], scores={Color.WHITE: 0, Color.BLACK: 0})
         )
 
         assert payload.pieces == []
 
 
-class TestEventPayloadFrom:
-    def test_move_started(self):
-        payload = event_payload_from(
-            MoveStarted(move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0))
-        )
-        assert payload.event_type == "MoveStarted"
-        assert payload.data == {
-            "move_id": 1, "piece_id": 7,
-            "src": {"x": 6, "y": 0}, "dst": {"x": 5, "y": 0},
-        }
+class TestOpFromEvent:
+    """One op per event, symmetric with client/remote_game.py's decoders."""
 
-    def test_move_completed(self):
-        payload = event_payload_from(
-            MoveCompleted(
-                move_id=1, piece_id=7, piece_type=PieceType.ROOK, color=Color.WHITE,
-                src=Position(6, 0), dst=Position(5, 0),
+    def test_move_started(self):
+        op = op_from_event(
+            MoveStarted(
+                move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0),
+                start_time_ms=MOVE_START_MS, arrival_time_ms=MOVE_ARRIVAL_MS,
             )
         )
-        assert payload.event_type == "MoveCompleted"
-        assert payload.data["piece_type"] == "R"
-        assert payload.data["color"] == "w"
+        assert op == [
+            OpCode.MOVE_STARTED.value, 7, 1, 6, 0, 5, 0, MOVE_START_MS, MOVE_ARRIVAL_MS
+        ]
 
-    def test_move_truncated(self):
-        payload = event_payload_from(
-            MoveTruncated(move_id=1, piece_id=7, target=Position(4, 0), arrival_time_ms=1500)
+    def test_move_truncated_carries_whether_the_piece_is_still_travelling(self):
+        still_going = op_from_event(
+            MoveTruncated(
+                move_id=1, piece_id=7, target=Position(4, 0),
+                arrival_time_ms=1500, in_flight=True,
+            )
         )
-        assert payload.event_type == "MoveTruncated"
-        assert payload.data == {
-            "move_id": 1, "piece_id": 7,
-            "target": {"x": 4, "y": 0}, "arrival_time_ms": 1500,
-        }
+        settled = op_from_event(
+            MoveTruncated(
+                move_id=1, piece_id=7, target=Position(4, 0),
+                arrival_time_ms=1500, in_flight=False,
+            )
+        )
+        assert still_going == [OpCode.MOVE_TRUNCATED.value, 7, 1, 4, 0, 1500, True]
+        assert settled == [OpCode.MOVE_TRUNCATED.value, 7, 1, 4, 0, 1500, False]
+
+    def test_move_completed_carries_the_post_promotion_type(self):
+        op = op_from_event(
+            MoveCompleted(
+                move_id=1, piece_id=7, piece_type=PieceType.QUEEN, color=Color.WHITE,
+                src=Position(1, 0), dst=Position(0, 0),
+            )
+        )
+        assert op == [OpCode.MOVE_COMPLETED.value, 7, 1, 1, 0, 0, 0, "Q", "w"]
 
     def test_move_aborted(self):
-        payload = event_payload_from(MoveAborted(move_id=1, piece_id=7, position=Position(6, 0)))
-        assert payload.event_type == "MoveAborted"
-        assert payload.data == {"move_id": 1, "piece_id": 7, "position": {"x": 6, "y": 0}}
+        op = op_from_event(MoveAborted(move_id=1, piece_id=7, position=Position(6, 0)))
+        assert op == [OpCode.MOVE_ABORTED.value, 7, 1, 6, 0]
 
-    def test_piece_captured(self):
-        payload = event_payload_from(
+    def test_piece_captured_carries_the_capturing_move(self):
+        op = op_from_event(
             PieceCaptured(
                 piece_id=3, piece_type=PieceType.PAWN, color=Color.BLACK,
                 position=Position(4, 0), capturing_move_id=2,
             )
         )
-        assert payload.event_type == "PieceCaptured"
-        assert payload.data == {
-            "piece_id": 3, "piece_type": "P", "color": "b",
-            "position": {"x": 4, "y": 0}, "capturing_move_id": 2,
-        }
+        assert op == [OpCode.PIECE_CAPTURED.value, 3, 2, 4, 0, "P", "b"]
 
     def test_rest_ended(self):
-        payload = event_payload_from(RestEnded(piece_id=3, position=Position(4, 0)))
-        assert payload.event_type == "RestEnded"
-        assert payload.data == {"piece_id": 3, "position": {"x": 4, "y": 0}}
+        op = op_from_event(RestEnded(piece_id=3, position=Position(4, 0)))
+        assert op == [OpCode.REST_ENDED.value, 3, 4, 0]
+
+    def test_game_ended_has_no_op_of_its_own(self):
+        assert op_from_event(GameEnded(Color.WHITE)) is None
+
+    def test_scores(self):
+        assert scores_op({Color.WHITE: 5, Color.BLACK: 3}) == [OpCode.SCORES.value, 5, 3]
+
+
+class TestOpsAreCompact:
+    def test_a_move_frame_is_far_smaller_than_a_keyframe(self):
+        """The whole point of phase 1: the frame a move produces must cost a
+        fraction of the full state it used to."""
+        op = op_from_event(
+            MoveStarted(
+                move_id=1, piece_id=7, src=Position(6, 0), dst=Position(5, 0),
+                start_time_ms=MOVE_START_MS, arrival_time_ms=MOVE_ARRIVAL_MS,
+            )
+        )
+        delta = DeltaPayload(ops=[op], server_time_ms=SNAPSHOT_CLOCK_MS)
+        keyframe = keyframe_payload_from_snapshot(
+            FakeSnapshot(
+                pieces=[sample_piece_dto()], scores={Color.WHITE: 0, Color.BLACK: 0}
+            )
+        )
+
+        assert len(delta.model_dump_json()) < len(keyframe.model_dump_json())

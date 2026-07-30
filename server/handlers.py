@@ -4,7 +4,6 @@ from pydantic import ValidationError
 
 from server.connection import Connection
 from server.dispatcher import register
-from server.encoding import state_payload_from_snapshot
 from server.game_registry import GameRegistry
 from server.game_session import GameSession
 from shared.messages import (
@@ -60,7 +59,7 @@ async def _start_game_from_room(room: Room) -> None:
     game = registry.create_game(
         player_a, player_b, clock, persistence, room.name, on_finalize=_on_game_finalized
     )
-    room.game_id = game.id
+    room_manager.mark_live(room, game.id)
     for player_id, session in game.players.items():
         color = game.color_of[player_id]
         await session.connection.send(
@@ -76,7 +75,7 @@ async def _start_game_from_room(room: Room) -> None:
                 game_id=game.id,
             )
         )
-    await game.broadcast_state()
+    await game.broadcast_keyframe()
 
 
 async def _on_game_finalized(game: GameSession) -> None:
@@ -85,6 +84,9 @@ async def _on_game_finalized(game: GameSession) -> None:
     finished game's room closes once everyone has left it instead of
     leaving a spectator wedged in a dead room."""
     registry.remove(game.id)
+    room = room_manager.room_of(next(iter(game.players)))
+    if room is not None:
+        room_manager.mark_ended(room)
     for session in (*game.players.values(), *game.observers):
         room_manager.leave(session)
 
@@ -238,16 +240,11 @@ async def handle_join_room(conn: Connection, envelope: Envelope) -> None:
                 game_id=game.id,
             )
         )
-        # Personal snapshot, not a broadcast -- otherwise they'd wait up to
-        # TICK_MS for the next tick to see the board.
-        state_payload = state_payload_from_snapshot(game.engine.get_snapshot())
-        await conn.send(
-            Envelope(
-                type=MessageType.STATE,
-                payload=state_payload.model_dump(),
-                game_id=game.id,
-            )
-        )
+        # Personal keyframe, not a broadcast -- otherwise they'd wait for the
+        # next state change to see the board at all. Encoded after
+        # add_observer above, so any delta that overtakes it is one this
+        # keyframe already contains rather than one the observer missed.
+        await conn.send(game.keyframe_envelope())
         return
 
     # role == PLAYER, not yet started: only the first seat of an existing
@@ -281,7 +278,7 @@ async def handle_play(conn: Connection, envelope: Envelope) -> None:
         await conn.send_error(ERROR_ACCOUNT_NOT_FOUND)
         return
 
-    result = room_manager.seek(session, rating)
+    result = room_manager.seek(session, rating, clock.now_ms())
     if result.matched:
         await _start_game_from_room(result.room)
         return
@@ -343,7 +340,7 @@ async def handle_move(conn: Connection, envelope: Envelope) -> None:
         await conn.send_error(ERROR_ILLEGAL_MOVE.format(reason=validation.reason))
         return
 
-    await game.broadcast_state()
+    await game.flush_frame()
 
 
 @register(MessageType.JUMP)
@@ -379,7 +376,25 @@ async def handle_jump(conn: Connection, envelope: Envelope) -> None:
         await conn.send_error(ERROR_ILLEGAL_MOVE.format(reason=validation.reason))
         return
 
-    await game.broadcast_state()
+    await game.flush_frame()
+
+
+@register(MessageType.RESYNC)
+async def handle_resync(conn: Connection, envelope: Envelope) -> None:
+    """A client that spotted a gap in Envelope.seq asking to be re-seeded.
+    Answered with a personal keyframe -- the same recovery path a joining
+    observer takes -- which costs the shared delta stream nothing. Works for
+    observers as well as players, hence the registry lookup."""
+    if conn.player_session is None:
+        await conn.send_error(ERROR_NOT_AUTHENTICATED)
+        return
+
+    game = registry.get_game_for_player(conn.player_session.player_id)
+    if game is None:
+        await conn.send_error(ERROR_NOT_IN_GAME)
+        return
+
+    await conn.send(game.keyframe_envelope())
 
 
 @register(MessageType.RESIGN)

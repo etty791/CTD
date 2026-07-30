@@ -17,10 +17,16 @@ class GameEnded:
 
 @dataclass(frozen=True)
 class MoveStarted:
+    """A move was accepted and is now in flight. `start_time_ms` and
+    `arrival_time_ms` are the move's absolute clock bounds, carried here so
+    consumers on the wire never have to re-derive travel timing (which is
+    the arbiter's business, not theirs)."""
     move_id: int
     piece_id: Any
     src: Position
     dst: Position
+    start_time_ms: int
+    arrival_time_ms: int
 
 
 @dataclass(frozen=True)
@@ -35,12 +41,19 @@ class MoveCompleted:
 
 @dataclass(frozen=True)
 class MoveTruncated:
-    """A move was shortened mid-flight by a same-color blocker: its piece is
-    still travelling, but toward `target`, arriving at `arrival_time_ms`."""
+    """A move ended somewhere other than the target it was ordered to.
+
+    Two cases, told apart by `in_flight`:
+    - True: shortened mid-flight by a same-color blocker. The piece is still
+      travelling, but toward `target`, arriving at `arrival_time_ms`.
+    - False: the move is over. The piece has already been placed on `target`
+      (it had vacated its origin and retreated there) and is resting.
+    """
     move_id: int
     piece_id: Any
     target: Position
     arrival_time_ms: int
+    in_flight: bool
 
 
 @dataclass(frozen=True)

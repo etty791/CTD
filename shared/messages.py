@@ -4,7 +4,7 @@ Each `MessageType` that carries a structured payload gets a dedicated model
 here so handlers validate `Envelope.payload`.
 
 These models depend on `model/` only: encoding a server-side `GameSnapshot`
-into a `StatePayload` lives in `server/encoding.py`, so the wire contract
+into a `KeyframePayload` lives in `server/encoding.py`, so the wire contract
 stays free of `game_engine` knowledge the client has no use for.
 """
 from typing import Any, Dict, List
@@ -18,7 +18,7 @@ from model.position import Position
 
 # A piece that is not mid-move has made no progress through one.
 IDLE_PROGRESS = 0.0
-# Sentinel for a StatePayload built before any real clock reading is known.
+# Sentinel for a frame built before any real clock reading is known.
 NO_SERVER_TIME_MS = 0
 
 
@@ -47,17 +47,6 @@ class AuthAckPayload(BaseModel):
 
 class ErrorPayload(BaseModel):
     message: str
-
-
-class EventPayload(BaseModel):
-    """A forwarded engine event (MoveStarted, PieceCaptured, ...). Kept
-    generic -- `data` is a free-form dict rather than one field per event
-    dataclass -- so this module gains no dependency on `events/`; encoding
-    and decoding the real dataclasses lives on the server/client sides that
-    already have them (server/encoding.py, client/remote_game.py)."""
-
-    event_type: str
-    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class JoinRoomPayload(BaseModel):
@@ -106,7 +95,7 @@ class PiecePayload(BaseModel):
     A moving piece carries the absolute start/arrival times of its move
     rather than a sampled progress fraction: state frames are published on
     change, not on a timer, so the receiver interpolates the motion itself
-    against StatePayload.server_time_ms. Both are None for a piece at rest,
+    against the frame's server_time_ms. Both are None for a piece at rest,
     where origin == target == position.
     """
 
@@ -151,9 +140,25 @@ class PiecePayload(BaseModel):
         )
 
 
-class StatePayload(BaseModel):
+class KeyframePayload(BaseModel):
+    """A whole game state. The universal recovery path: game start, observer
+    join, and a client-detected sequence gap all resolve to one of these."""
+
     pieces: List[PiecePayload]
     scores: Dict[str, int]
     # The sender's game clock when this frame was encoded; the timebase every
     # piece's move_start_ms/move_arrival_ms is expressed in.
+    server_time_ms: int = NO_SERVER_TIME_MS
+
+
+class DeltaPayload(BaseModel):
+    """The changes since the previous frame, as positional-array ops (see
+    `shared/delta_ops.py` for their layout).
+
+    `server_time_ms` is per frame rather than per op because it is what the
+    receiver re-anchors its motion interpolation against: without a fresh
+    reading every frame, a moving piece's progress would drift from the
+    server's clock over the life of a game."""
+
+    ops: List[List[Any]] = Field(default_factory=list)
     server_time_ms: int = NO_SERVER_TIME_MS

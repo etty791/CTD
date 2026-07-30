@@ -1,6 +1,12 @@
 import asyncio
 from typing import Callable
 
+from observability.metrics import histogram
+from observability.metrics_config import DRAIN_LOOP_LAG_SECONDS
+from shared.protocol_config import MS_PER_SECOND
+
+_drain_loop_lag_seconds = histogram(DRAIN_LOOP_LAG_SECONDS)
+
 
 class TimerHandle:
     """Cancellable handle to a scheduled callback."""
@@ -23,6 +29,22 @@ class AsyncClock:
     def __init__(self, tick_ms: int):
         self._tick_ms = tick_ms
 
+    def _record_lag(self, elapsed_ms: int) -> None:
+        """Spec §19's single most important internal metric: how far a
+        tick's actual elapsed time overshot the requested tick_ms. Split
+        out from `every` so it can be unit-tested directly without
+        sleeping on a real event loop.
+        """
+        lag_seconds = (elapsed_ms - self._tick_ms) / MS_PER_SECOND
+        _drain_loop_lag_seconds.observe(lag_seconds)
+
+    def now_ms(self) -> int:
+        """The clock's own notion of 'now', so callers needing a
+        timestamp (e.g. matchmaking's widening band) never read real time
+        directly and so this is the one place tests fake wholesale.
+        """
+        return int(asyncio.get_event_loop().time() * MS_PER_SECOND)
+
     def every(self, callback: Callable[[int], None]) -> TimerHandle:
         """Call `callback(elapsed_ms)` once per tick, forever, until the
         returned handle is cancelled. `elapsed_ms` is measured off the
@@ -39,6 +61,7 @@ class AsyncClock:
                 now = loop.time()
                 elapsed_ms = int((now - last) * 1000)
                 last = now
+                self._record_lag(elapsed_ms)
                 callback(elapsed_ms)
         return TimerHandle(asyncio.create_task(_loop()))
 

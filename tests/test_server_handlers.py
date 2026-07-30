@@ -39,6 +39,9 @@ class FakeConnection:
     async def send(self, envelope: Envelope) -> None:
         self.sent.append(envelope)
 
+    async def send_raw(self, body: str, message_type) -> None:
+        await self.send(Envelope.model_validate_json(body))
+
     async def send_error(self, message: str) -> None:
         self.errors.append(message)
         await self.send(Envelope(type=MessageType.ERROR, payload={"message": message}))
@@ -55,11 +58,14 @@ class _FakeHandle:
 class _FakeClock:
     """Records the tick callback (.every) and any .after(delay, cb) requests
     without spawning a real asyncio loop or auto-firing timeouts. Tests fire
-    a recorded .after callback manually via `clock.after_calls[-1][1]()`."""
+    a recorded .after callback manually via `clock.after_calls[-1][1]()`.
+    `now_ms` is a plain settable attribute so tests control matchmaking's
+    widening-band time without touching a real clock."""
 
     def __init__(self):
         self.callback = None
         self.after_calls: list[tuple[int, object]] = []
+        self._now_ms = 0
 
     def every(self, callback):
         self.callback = callback
@@ -68,6 +74,9 @@ class _FakeClock:
     def after(self, delay_ms, callback):
         self.after_calls.append((delay_ms, callback))
         return _FakeHandle()
+
+    def now_ms(self):
+        return self._now_ms
 
 
 class _InertPersistence:
@@ -267,7 +276,7 @@ class TestHandleCreateRoom:
 
 
 class TestHandleJoinRoom:
-    async def test_second_joiner_starts_game_with_broadcast(self):
+    async def test_second_joiner_starts_game_with_keyframe(self):
         conn_a, conn_b = FakeConnection(), FakeConnection()
         PlayerSession("alice", conn_a)
         PlayerSession("bob", conn_b)
@@ -285,8 +294,8 @@ class TestHandleJoinRoom:
         assert start_a[0].payload["color"] == "w"
         assert start_b[0].payload["color"] == "b"
         assert start_a[0].payload["game_id"] == start_b[0].payload["game_id"]
-        assert any(e.type == MessageType.STATE for e in conn_a.sent)
-        assert any(e.type == MessageType.STATE for e in conn_b.sent)
+        assert any(e.type == MessageType.KEYFRAME for e in conn_a.sent)
+        assert any(e.type == MessageType.KEYFRAME for e in conn_b.sent)
 
     async def test_unknown_room_id_errors(self):
         conn = FakeConnection()
@@ -333,7 +342,7 @@ class TestHandleJoinRoom:
         assert len(start_c) == 1
         assert start_c[0].payload["role"] == "observer"
         assert start_c[0].payload["color"] is None
-        assert any(e.type == MessageType.STATE for e in conn_c.sent)
+        assert any(e.type == MessageType.KEYFRAME for e in conn_c.sent)
         # observer's personal join must not broadcast to the existing players
         assert len(conn_a.sent) == sent_a_before
         assert len(conn_b.sent) == sent_b_before
@@ -535,7 +544,7 @@ class TestHandleMove:
 
         assert conn_a.errors == [ERROR_NOT_YOUR_PIECE]
 
-    async def test_valid_move_broadcasts_state(self):
+    async def test_valid_move_broadcasts_a_delta(self):
         conn_a, conn_b = FakeConnection(), FakeConnection()
         player_a = PlayerSession("p1", conn_a)  # White
         player_b = PlayerSession("p2", conn_b)  # Black
@@ -547,8 +556,53 @@ class TestHandleMove:
         await handlers.handle_move(conn_a, envelope)
 
         assert conn_a.errors == []
-        assert any(e.type == MessageType.STATE for e in conn_a.sent)
-        assert any(e.type == MessageType.STATE for e in conn_b.sent)
+        assert any(e.type == MessageType.DELTA for e in conn_a.sent)
+        assert any(e.type == MessageType.DELTA for e in conn_b.sent)
+
+
+class TestHandleResync:
+    """A client that spotted a gap in Envelope.seq gets re-seeded from the
+    same keyframe path an observer join takes."""
+
+    async def test_not_authenticated_sends_error(self):
+        conn = FakeConnection()
+
+        await handlers.handle_resync(conn, Envelope(type=MessageType.RESYNC))
+
+        assert conn.errors == [ERROR_NOT_AUTHENTICATED]
+
+    async def test_not_in_a_game_sends_error(self):
+        conn = FakeConnection()
+        PlayerSession("p1", conn)
+
+        await handlers.handle_resync(conn, Envelope(type=MessageType.RESYNC))
+
+        assert conn.errors == [ERROR_NOT_IN_GAME]
+
+    async def test_a_player_gets_a_personal_keyframe(self):
+        conn_a, conn_b = FakeConnection(), FakeConnection()
+        game = _create_test_game(PlayerSession("p1", conn_a), PlayerSession("p2", conn_b))
+
+        await handlers.handle_resync(conn_a, Envelope(type=MessageType.RESYNC))
+
+        assert len(conn_a.sent) == 1
+        keyframe = conn_a.sent[0]
+        assert keyframe.type == MessageType.KEYFRAME
+        assert keyframe.game_id == game.id
+        assert len(keyframe.payload["pieces"]) == 32
+        assert conn_b.sent == []  # personal, not a broadcast
+
+    async def test_an_observer_gets_one_too(self):
+        conn_a, conn_b = FakeConnection(), FakeConnection()
+        game = _create_test_game(PlayerSession("p1", conn_a), PlayerSession("p2", conn_b))
+        conn_obs = FakeConnection()
+        observer = PlayerSession("obs", conn_obs)
+        game.add_observer(observer)
+        handlers.registry.add_observer(game.id, observer.player_id)
+
+        await handlers.handle_resync(conn_obs, Envelope(type=MessageType.RESYNC))
+
+        assert conn_obs.sent[0].type == MessageType.KEYFRAME
 
 
 class TestHandleJump:
@@ -596,7 +650,7 @@ class TestHandleJump:
 
         assert conn_a.errors == [ERROR_NOT_YOUR_PIECE]
 
-    async def test_valid_jump_broadcasts_state(self):
+    async def test_valid_jump_broadcasts_a_delta(self):
         conn_a, conn_b = FakeConnection(), FakeConnection()
         player_a = PlayerSession("p1", conn_a)  # White
         player_b = PlayerSession("p2", conn_b)  # Black
@@ -606,8 +660,8 @@ class TestHandleJump:
         await handlers.handle_jump(conn_a, envelope)
 
         assert conn_a.errors == []
-        assert any(e.type == MessageType.STATE for e in conn_a.sent)
-        assert any(e.type == MessageType.STATE for e in conn_b.sent)
+        assert any(e.type == MessageType.DELTA for e in conn_a.sent)
+        assert any(e.type == MessageType.DELTA for e in conn_b.sent)
 
 
 class TestOnGameFinalized:
@@ -627,6 +681,7 @@ class TestOnGameFinalized:
             room_id=result_a.room.name,
             on_finalize=handlers._on_game_finalized,
         )
+        handlers.room_manager.mark_live(result_a.room, game.id)
 
         await game.finalize_by_forfeit(Color.BLACK, GAME_OVER_REASON_DISCONNECT)
 
@@ -657,6 +712,7 @@ class TestOnGameFinalized:
             room_id=room_id,
             on_finalize=handlers._on_game_finalized,
         )
+        handlers.room_manager.mark_live(result_a.room, game.id)
         game.add_observer(observer)
         handlers.registry.add_observer(game.id, observer.player_id)
 

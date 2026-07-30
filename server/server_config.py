@@ -15,23 +15,33 @@ DEBUG_CONNECTIONS_PATH = "/debug/connections"
 MAX_PLAYERS_PER_ROOM = 2
 # Seat order: first player (creator) is White, second is Black.
 SEAT_COLORS = (Color.WHITE, Color.BLACK)
-# Short, typeable room ids. Crockford base32 alphabet (no I, L, O, U).
-ROOM_ID_LENGTH = 6
+# Typeable room ids. Crockford base32 alphabet (no I, L, O, U). 16 chars over
+# this 32-symbol alphabet is ~80 bits - the brute-force fix from the spec.
+ROOM_ID_LENGTH = 16
 ROOM_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 # --- Matchmaking (ELO seek pool) ---
-# A "Play" seeker is paired with a waiting seeker within this rating band;
-# if none appears within MATCH_TIMEOUT_MS (shared/protocol_config.py, since
-# the client waits on it too), matchmaking gives up.
-MATCH_ELO_RANGE = 100
+# A "Play" seeker is paired with a waiting seeker within a rating band that
+# widens the longer they wait: MATCH_ELO_RANGE_INITIAL to start, +STEP every
+# INTERVAL_MS, capped at MATCH_ELO_RANGE_MAX. Widening is evaluated only when
+# a new seeker calls `seek` (against the band of whoever has been waiting);
+# if nobody appears within MATCH_TIMEOUT_MS (shared/protocol_config.py, since
+# the client waits on it too), matchmaking gives up regardless of band.
+MATCH_ELO_RANGE_INITIAL = 100
+MATCH_ELO_RANGE_STEP = 50
+MATCH_ELO_WIDEN_INTERVAL_MS = 5_000
+MATCH_ELO_RANGE_MAX = 400
 ERROR_NO_MATCH_FOUND = "no opponent found"
 
 # --- Ticking / game-over reasons ---
 TICK_MS = 50
-# STATE frames are published on change, not on every tick. This is the
-# ceiling between two frames anyway: a resync heartbeat, so a dropped frame
-# or an unexpected desync heals within a second on an otherwise idle board.
-MAX_STATE_INTERVAL_MS = 1000
+# Frames are published on change, and an idle game publishes none at all -
+# there is no heartbeat. A dropped frame heals through the client noticing a
+# gap in Envelope.seq and asking for a keyframe (RESYNC); socket liveness is
+# WebSocket ping/pong, which uvicorn and the websockets client both do
+# themselves. This is the floor between two frames of one game: a burst of
+# commands coalesces rather than emitting a frame each.
+FRAME_MIN_INTERVAL_MS = 10
 GAME_OVER_REASON_KING_CAPTURED = "king_captured"
 GAME_OVER_REASON_DISCONNECT = "opponent_disconnected"
 GAME_OVER_REASON_RESIGNATION = "resignation"

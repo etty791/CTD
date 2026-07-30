@@ -11,7 +11,9 @@ class MessageType(str, Enum):
     LOGIN = "login"
     MOVE = "move"
     JUMP = "jump"
-    STATE = "state"
+    KEYFRAME = "keyframe"
+    DELTA = "delta"
+    RESYNC = "resync"
     CREATE_ROOM = "create_room"
     JOIN_ROOM = "join_room"
     PLAY = "play"
@@ -19,11 +21,16 @@ class MessageType(str, Enum):
     GAME_OVER = "game_over"
     RESIGN = "resign"
     CANCEL_SEEK = "cancel_seek"
-    EVENT = "event"
     ERROR = "error"
 
 
 class Envelope(BaseModel):
+    """`seq` numbers the frames of one game's state stream (KEYFRAME/DELTA)
+    and is None on everything else. It sits at envelope level rather than
+    inside the payload deliberately: gap detection and, later, routing must
+    be possible without parsing a payload."""
+
     type: MessageType
     payload: dict[str, Any] = Field(default_factory=dict)
     game_id: Optional[str] = None
+    seq: Optional[int] = None

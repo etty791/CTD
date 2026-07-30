@@ -7,11 +7,17 @@ at the very end of `_finalize`.
 
 Broadcasting is event-driven, not tick-driven: the engine still advances real
 time every TICK_MS (arrivals, path collisions and rest expiry all need it), but
-a STATE frame goes out only when one of STATE_CHANGING_EVENTS was published
-during that tick - every event in a tick coalescing into a single frame - or
-when MAX_STATE_INTERVAL_MS has passed without one. Clients interpolate moving
-pieces themselves from the absolute move times in the frame, so they do not
+a frame goes out only when one of STATE_CHANGING_EVENTS was published during
+that tick - every event in a tick coalescing into a single DELTA frame. An idle
+game sends nothing at all; there is no heartbeat, because a client that misses
+a frame sees the gap in Envelope.seq and asks for a keyframe. Clients
+interpolate moving pieces themselves from absolute move times, so they do not
 need a fresh sample every tick to animate smoothly.
+
+Two frame types, one sequence: DELTA advances `_seq` by one, KEYFRAME restates
+the whole game at whatever `_seq` currently is (so a keyframe can be sent to
+one recipient without disturbing the shared stream). Every recovery path -
+game start, observer join, RESYNC - ends in the same keyframe.
 
 End-of-game state machine (two idempotent gates):
 - `_ended`   — set the first time the game concludes (king capture via a
@@ -38,15 +44,22 @@ from events.game_events import (
     RestEnded,
 )
 from model.piece import Color
+from observability.metrics import counter, histogram
+from observability.metrics_config import (
+    GAME_EVENTS_PER_FRAME,
+    GAME_FRAMES_TOTAL,
+)
 from server.async_clock import AsyncClock, TimerHandle
-from server.encoding import event_payload_from, state_payload_from_snapshot
+from server.delta import DeltaBuilder
+from server.encoding import keyframe_payload_from_snapshot
 from shared.messages import (
+    DeltaPayload,
     GameOverPayload,
     RatingChangePayload,
 )
 from server.persistence.worker import PersistenceWorker
 from shared.protocol import Envelope, MessageType
-from server.server_config import GAME_OVER_REASON_KING_CAPTURED, MAX_STATE_INTERVAL_MS
+from server.server_config import FRAME_MIN_INTERVAL_MS, GAME_OVER_REASON_KING_CAPTURED
 from server.session import PlayerSession
 
 logger = logging.getLogger(__name__)
@@ -66,19 +79,11 @@ STATE_CHANGING_EVENTS = (
     GameEnded,
 )
 
-# The subset of STATE_CHANGING_EVENTS forwarded to clients as their own EVENT
-# envelope (see _on_forwarded_event/_broadcast_event below), for client-side
-# consumers like SoundPlayer that need per-event cues rather than a coalesced
-# STATE diff. GameEnded is excluded: it's already carried by GAME_OVER via
-# the finalize pipeline, so forwarding it again here would be redundant.
-FORWARDED_EVENTS = (
-    MoveStarted,
-    MoveCompleted,
-    MoveTruncated,
-    MoveAborted,
-    PieceCaptured,
-    RestEnded,
-)
+_game_frames_total = counter(GAME_FRAMES_TOTAL)
+_game_events_per_frame = histogram(GAME_EVENTS_PER_FRAME)
+
+# The stream starts before any frame has been sent, so the first DELTA is 1.
+INITIAL_SEQ = 0
 
 
 class GameSession:
@@ -96,10 +101,9 @@ class GameSession:
         # GameStarted already fired inside the engine's __init__; GameEnded fires
         # later inside engine.wait(), so subscribing here is safe (and needed).
         self.engine.events.subscribe(GameEnded, self._on_game_ended)
+        self._delta = DeltaBuilder(self._read_scores)
         for event_type in STATE_CHANGING_EVENTS:
-            self.engine.events.subscribe(event_type, self._mark_dirty)
-        for event_type in FORWARDED_EVENTS:
-            self.engine.events.subscribe(event_type, self._on_forwarded_event)
+            self.engine.events.subscribe(event_type, self._delta.on_event)
 
         self.players: dict[str, PlayerSession] = {
             player_a.player_id: player_a,
@@ -116,8 +120,8 @@ class GameSession:
         self._persistence = persistence
         self._on_finalize = on_finalize
 
-        self._dirty = False
-        self._ms_since_broadcast = 0
+        self._seq = INITIAL_SEQ
+        self._last_frame_ms: int | None = None
         self._ended = False
         self._finalized = False
         self._winner: Color | None = None
@@ -145,51 +149,65 @@ class GameSession:
 
     # --- broadcasting -----------------------------------------------------
 
-    def _mark_dirty(self, event) -> None:
-        """SYNC bus handler for every state-changing event. Deliberately does
-        nothing but raise the flag: several events routinely fire within one
-        tick (a capture is a MoveCompleted + PieceCaptured), and they should
-        cost exactly one frame between them."""
-        self._dirty = True
+    def _read_scores(self) -> dict[Color, int]:
+        return self.engine.get_snapshot().get_scores()
 
-    def _reset_broadcast_state(self) -> None:
-        self._dirty = False
-        self._ms_since_broadcast = 0
-
-    async def broadcast_state(self) -> None:
-        # Reset up front, not after awaiting the sends: this doubles as the
-        # heartbeat reset for the out-of-band broadcasts (a move handler's
-        # immediate echo, the initial frame at game start), so they don't
-        # leave a redundant frame queued for the next tick.
-        self._reset_broadcast_state()
-        state_payload = state_payload_from_snapshot(self.engine.get_snapshot())
-        envelope = Envelope(
-            type=MessageType.STATE,
-            payload=state_payload.model_dump(),
-            game_id=self.id,
-        )
-        await asyncio.gather(
-            *(session.connection.send(envelope) for session in self._recipients()),
-            return_exceptions=True,
-        )
-
-    def _on_forwarded_event(self, event) -> None:
-        """SYNC bus handler for FORWARDED_EVENTS. Unlike _mark_dirty, this is
-        not coalesced -- each event gets its own EVENT envelope/task, so
-        client-side per-event consumers (SoundPlayer) get 1:1 cues instead of
-        a single summarizing STATE diff."""
-        asyncio.create_task(self._broadcast_event(event))
-
-    async def _broadcast_event(self, event) -> None:
-        payload = event_payload_from(event)
-        envelope = Envelope(
-            type=MessageType.EVENT,
+    def keyframe_envelope(self) -> Envelope:
+        """The whole game at the current sequence number. Sending one costs
+        no sequence number of its own, so a personal keyframe (observer join,
+        RESYNC) leaves the shared delta stream untouched."""
+        payload = keyframe_payload_from_snapshot(self.engine.get_snapshot())
+        return Envelope(
+            type=MessageType.KEYFRAME,
             payload=payload.model_dump(),
             game_id=self.id,
+            seq=self._seq,
         )
+
+    async def _fan_out(self, envelope: Envelope) -> None:
+        """Serialize once, send to everyone. One half-closed socket must not
+        starve the recipients behind it, hence return_exceptions."""
+        body = envelope.model_dump_json()
         await asyncio.gather(
-            *(session.connection.send(envelope) for session in self._recipients()),
+            *(
+                session.connection.send_raw(body, envelope.type)
+                for session in self._recipients()
+            ),
             return_exceptions=True,
+        )
+
+    async def broadcast_keyframe(self) -> None:
+        _game_frames_total.inc()
+        await self._fan_out(self.keyframe_envelope())
+
+    def _frame_capped(self) -> bool:
+        """True if a frame went out less than FRAME_MIN_INTERVAL_MS ago. The
+        ops stay buffered and go out with the next flush, so nothing is lost
+        by waiting - only the tick-independent paths (a move echo) can ever
+        arrive this fast."""
+        now_ms = self._clock.now_ms()
+        if self._last_frame_ms is not None and now_ms - self._last_frame_ms < FRAME_MIN_INTERVAL_MS:
+            return True
+        self._last_frame_ms = now_ms
+        return False
+
+    async def flush_frame(self) -> None:
+        """Drain whatever the engine published into a single DELTA frame. An
+        idle pass has nothing to say and sends nothing."""
+        if not self._delta.has_ops() or self._frame_capped():
+            return
+        ops = self._delta.drain()
+        self._seq += 1
+        _game_frames_total.inc()
+        _game_events_per_frame.observe(len(ops))
+        payload = DeltaPayload(ops=ops, server_time_ms=self.engine.get_snapshot().get_clock_ms())
+        await self._fan_out(
+            Envelope(
+                type=MessageType.DELTA,
+                payload=payload.model_dump(),
+                game_id=self.id,
+                seq=self._seq,
+            )
         )
 
     # --- ticking ----------------------------------------------------------
@@ -200,12 +218,10 @@ class GameSession:
     def _on_tick(self, elapsed_ms: int) -> None:
         # Runs synchronously on the clock callback. engine.wait may publish
         # GameEnded, which invokes _on_game_ended synchronously right here -
-        # as it does _mark_dirty for every state-changing event.
+        # as it does DeltaBuilder.on_event for every state-changing event.
         self.engine.wait(elapsed_ms)
-        self._ms_since_broadcast += elapsed_ms
-        if self._dirty or self._ms_since_broadcast >= MAX_STATE_INTERVAL_MS:
-            self._reset_broadcast_state()
-            asyncio.create_task(self.broadcast_state())
+        if self._delta.has_ops():
+            asyncio.create_task(self.flush_frame())
         if not self.engine.game_active:
             self.cancel_ticking()
             asyncio.create_task(self._finalize(GAME_OVER_REASON_KING_CAPTURED))
@@ -277,14 +293,12 @@ class GameSession:
             reason=reason,
             rating_changes=rating_changes,
         )
-        envelope = Envelope(
-            type=MessageType.GAME_OVER,
-            payload=payload.model_dump(),
-            game_id=self.id,
-        )
-        await asyncio.gather(
-            *(session.connection.send(envelope) for session in self._recipients()),
-            return_exceptions=True,
+        await self._fan_out(
+            Envelope(
+                type=MessageType.GAME_OVER,
+                payload=payload.model_dump(),
+                game_id=self.id,
+            )
         )
 
         if self._on_finalize is not None:

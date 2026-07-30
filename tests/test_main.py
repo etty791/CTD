@@ -21,6 +21,9 @@ class FakeConnection:
     async def send(self, envelope: Envelope) -> None:
         self.sent.append(envelope)
 
+    async def send_raw(self, body: str, message_type) -> None:
+        await self.send(Envelope.model_validate_json(body))
+
     async def send_error(self, message: str) -> None:
         await self.send(Envelope(type=MessageType.ERROR, payload={"message": message}))
 
@@ -36,6 +39,9 @@ class _FakeClock:
 
     def after(self, delay_ms, callback):
         return _FakeHandle()
+
+    def now_ms(self):
+        return 0
 
 
 class _InertPersistence:
