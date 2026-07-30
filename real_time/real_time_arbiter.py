@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from enum import Enum
 from typing import Optional
 
 from model.piece import Piece, PieceType, Color, State
 from rules.promotion import is_promotion_square
 from rules.rules_engine import validate_piece_move
 from model.position import Position
+from real_time.collision_fates import CollisionOutcome, compute_collision_fates, path_cells
+from real_time.event_queue import EventKind, EventQueue
 from real_time.real_time_config import *
 from events.event_bus import EventBus
 from events.game_events import (
@@ -27,12 +28,6 @@ REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
     State.short_rest: SHORT_REST_DURATION_MS,
 }
-
-class _CollisionOutcome(Enum):
-    """Fate assigned to a move by _resolve_path_collisions: CAPTURE destroys
-    the losing piece mid-transit, TRUNCATE stops it one square short."""
-    CAPTURE = "capture"
-    TRUNCATE = "truncate"
 
 class Move:
     def __init__(self, piece, origin, target, arrival_time, start_time, move_id):
@@ -58,34 +53,11 @@ def _is_straight_line(origin, target):
     dy = target.y - origin.y
     return dx == 0 or dy == 0 or abs(dx) == abs(dy)
 
-def _path_cells(origin, target):
-    """Returns all cells along the straight path from origin to target
-    (exclusive of origin, inclusive of target).
-
-    Moves that are not a straight line or 45-degree diagonal (e.g. a
-    knight's jump) have no intermediate squares to slide through, so we
-    return just the target. Treating them as a sliding move would make the
-    unit-step walk below never reach the target (infinite loop).
-    """
-
-    if not _is_straight_line(origin, target):
-        return [target]
-
-    dx = 0 if target.x == origin.x else (1 if target.x > origin.x else -1)
-    dy = 0 if target.y == origin.y else (1 if target.y > origin.y else -1)
-    cells = []
-    cur = Position(origin.x + dx, origin.y + dy)
-    while cur != target:
-        cells.append(cur)
-        cur = Position(cur.x + dx, cur.y + dy)
-    cells.append(target)
-    return cells
-
 def _move_distance(origin, target):
     """Number of animation 'steps' a move takes, used for arrival timing.
     Sliding moves take one step per square; a non-sliding jump (e.g. a
     knight) is a single leap regardless of its Chebyshev distance, matching
-    the single-cell path returned by _path_cells for such moves.
+    the single-cell path returned by path_cells for such moves.
     """
     if origin == target:
         return 0
@@ -95,13 +67,22 @@ def _move_distance(origin, target):
 
 class RealTimeArbiter:
 
-    def __init__(self, board, event_bus: Optional[EventBus] = None):
+    def __init__(
+        self,
+        board,
+        event_bus: Optional[EventBus] = None,
+        scheduler: SchedulerKind = DEFAULT_SCHEDULER,
+    ):
         self.board = board
         self.pending_moves = []
         self.clock = 0
         self._resting: list[RestingPiece] = []
         self._next_move_id = 1
         self.event_bus = event_bus
+        self._scheduler_kind = scheduler
+        # Only populated (and only consulted) in EVENT_HEAP mode; harmless
+        # and unused otherwise. See real_time/event_queue.py.
+        self._events = EventQueue()
 
     def _new_move_id(self) -> int:
         move_id = self._next_move_id
@@ -135,12 +116,30 @@ class RealTimeArbiter:
         piece.state = State.captured
         self._record_capture(piece, capturing_move_id)
         self._drop_moves_for(piece)
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # A piece captured mid-rest would otherwise leave a stale
+            # REST_END scheduled; harmless (the handler no-ops on a
+            # non-resting piece) but cancelled anyway for hygiene.
+            self._events.cancel(EventKind.REST_END, piece)
 
     def _drop_moves_for(self, piece: Piece) -> None:
         """Remove every pending Move belonging to `piece` - called the
         instant a piece dies so its stale move can never again be swept up
         as if the piece were still travelling."""
-        self.pending_moves = [m for m in self.pending_moves if m.piece is not piece]
+        for move in [m for m in self.pending_moves if m.piece is piece]:
+            self._remove_move(move)
+
+    def _remove_move(self, move) -> None:
+        """Drop `move` from pending_moves and, in EVENT_HEAP mode, cancel
+        whatever COLLISION/VACATE/MOVE_DONE is still scheduled for it - the
+        one place every move-removal path funnels through, so a dead move
+        can never again be popped off the heap and acted on."""
+        if move in self.pending_moves:
+            self.pending_moves.remove(move)
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            self._events.cancel(EventKind.COLLISION, move.move_id)
+            self._events.cancel(EventKind.VACATE, move.move_id)
+            self._events.cancel(EventKind.MOVE_DONE, move.move_id)
 
     def _place_piece(self, position: Position, piece: Piece) -> None:
         """Land `piece` on `position` and apply promotion - the arbiter's
@@ -183,6 +182,7 @@ class RealTimeArbiter:
         self._publish(MoveStarted(
             move.move_id, piece.id, origin, target, move.start_time, move.arrival_time,
         ))
+        self._schedule_move(move)
         return True
 
     def add_jump(self, piece, pos):
@@ -196,9 +196,30 @@ class RealTimeArbiter:
         self._publish(MoveStarted(
             move.move_id, piece.id, pos, pos, move.start_time, move.arrival_time,
         ))
+        self._schedule_move(move)
         return True
-    
+
+    def _schedule_move(self, move) -> None:
+        """EVENT_HEAP mode only: give a freshly-added move its VACATE (if it
+        actually leaves its origin) and MOVE_DONE events, then recompute
+        every pending move's collision fate from scratch - the newcomer may
+        have changed who collides with whom."""
+        if self._scheduler_kind != SchedulerKind.EVENT_HEAP:
+            return
+        if move.origin != move.target:
+            self._events.schedule(
+                move.start_time + DEFAULT_MOVE_DELAY_MS, EventKind.VACATE, move.move_id, move
+            )
+        self._events.schedule(move.arrival_time, EventKind.MOVE_DONE, move.move_id, move)
+        self._recompute_fates()
+
     def advance_time(self, ms):
+        target_ms = self.clock + ms
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            return self._advance_to_event_heap(target_ms)
+        return self._advance_time_tick_sweep(ms)
+
+    def _advance_time_tick_sweep(self, ms):
         king_captured = False
         self.clock += ms
         king_captured = self._resolve_path_collisions() or king_captured
@@ -211,6 +232,139 @@ class RealTimeArbiter:
                 king_captured = self._resolve_single(moves[0]) or king_captured
         self._release_expired_rests()
         return king_captured
+
+    # ------------------------------------------------------------------
+    # Event-heap scheduler (MIGRATION.md phase 2)
+    # ------------------------------------------------------------------
+
+    def next_event_time(self) -> Optional[int]:
+        """EVENT_HEAP mode only: the clock time of the earliest pending
+        event, or None if the game is fully settled (nothing scheduled).
+        Lets a caller (server/game_shard.py) park a game's wake instead of
+        polling it every tick."""
+        return self._events.peek_time()
+
+    def _advance_to_event_heap(self, target_ms: int) -> bool:
+        """Drain every event up to and including `target_ms`, advancing
+        `self.clock` to each one's own time as it is handled (so timing
+        anchored to move.start_time/arrival_time - _begin_rest chief among
+        them - is unaffected by how coarsely advance_time was called), then
+        snapping to target_ms once the heap is empty or has nothing left
+        due. Events sharing one millisecond are handled in
+        EventKind priority order (see event_queue.py's docstring): every
+        COLLISION first, then a fate recompute (a capture can change who
+        else collides), then VACATE, then MOVE_DONE (batched together so
+        simultaneous arrivals at one target still go through
+        _resolve_collision), then REST_END."""
+        king_captured = False
+        while True:
+            time_ms = self._events.peek_time()
+            if time_ms is None or time_ms > target_ms:
+                break
+            self.clock = time_ms
+            due = self._events.pop_due_at(time_ms)
+            collisions = [e for e in due if e.kind == EventKind.COLLISION]
+            vacates = [e for e in due if e.kind == EventKind.VACATE]
+            arrivals = [e for e in due if e.kind == EventKind.MOVE_DONE]
+            rest_ends = [e for e in due if e.kind == EventKind.REST_END]
+
+            for event in collisions:
+                king_captured = self._handle_collision_event(event.key, event.payload) or king_captured
+            if collisions:
+                self._recompute_fates()
+
+            for event in vacates:
+                self._handle_vacate_event(event.key)
+
+            if arrivals:
+                king_captured = self._handle_move_done_batch(arrivals) or king_captured
+                self._recompute_fates()
+
+            for event in rest_ends:
+                self._handle_rest_end_event(event.payload)
+        self.clock = target_ms
+        return king_captured
+
+    def _recompute_fates(self) -> None:
+        """EVENT_HEAP mode only: recompute every pending move's collision
+        fate from one pairwise scan (real_time.collision_fates - the same
+        scan the legacy sweep ran every tick) and apply it - a single pass,
+        deliberately not iterated to a fixed point. A truncation found in
+        this pass can itself change another move's path, but legacy never
+        re-scans within one call either: it applies whatever one
+        `_resolve_path_collisions` call finds and leaves any second-order
+        effect to be discovered independently, generally by the untouched
+        move's own arrival-time revalidation (`_is_still_valid`, which
+        already rejects a path blocked by a piece that has since landed in
+        it, and `_retreat_vacated_move`). Iterating here to a fixed point
+        would let one truncation cascade into pre-emptively truncating a
+        second move that legacy only ever discovers via that arrival-time
+        path - a real behavioral divergence caught by
+        tests/test_collisions.py's TestFriendlyCollisionsEdgeCases, not a
+        timing artifact like the ones documented in
+        tests/test_scheduler_equivalence.py. CAPTURE fates are (re)scheduled
+        as COLLISION events at their resolution_time rather than applied
+        here - the event fires and actually destroys the piece once the
+        clock reaches it."""
+        fates = compute_collision_fates(self.pending_moves, DEFAULT_MOVE_DELAY_MS)
+        for move in list(self.pending_moves):
+            fate = fates.get(move.move_id)
+            if fate is not None and fate.outcome == CollisionOutcome.TRUNCATE:
+                self._truncate_move(move, list(fate.path), fate.cell)
+
+        for move in self.pending_moves:
+            fate = fates.get(move.move_id)
+            if fate is not None and fate.outcome == CollisionOutcome.CAPTURE:
+                self._events.schedule(
+                    fate.resolution_time, EventKind.COLLISION, move.move_id, fate.capturing_move_id
+                )
+            else:
+                self._events.cancel(EventKind.COLLISION, move.move_id)
+
+    def _find_move(self, move_id: int):
+        for move in self.pending_moves:
+            if move.move_id == move_id:
+                return move
+        return None
+
+    def _handle_collision_event(self, move_id: int, capturing_move_id: int) -> bool:
+        move = self._find_move(move_id)
+        if move is None:
+            return False  # superseded - the move already left pending_moves
+        return self._capture_in_flight(move, capturing_move_id)
+
+    def _handle_vacate_event(self, move_id: int) -> None:
+        move = self._find_move(move_id)
+        if move is None:
+            return
+        if move.piece.state == State.airborne or move.origin == move.target:
+            return
+        if self.board.get_piece_at(move.origin) == move.piece:
+            self.board.set_piece_at(move.origin, None)
+
+    def _handle_move_done_batch(self, events) -> bool:
+        arrived = []
+        for event in events:
+            move = self._find_move(event.key)
+            if move is None:
+                continue
+            self._remove_move(move)
+            arrived.append(move)
+
+        king_captured = False
+        for target, moves in self._group_by_target(arrived).items():
+            if len(moves) > 1:
+                king_captured = self._resolve_collision(moves, target) or king_captured
+            else:
+                king_captured = self._resolve_single(moves[0]) or king_captured
+        return king_captured
+
+    def _handle_rest_end_event(self, piece: Piece) -> None:
+        if not piece.state.is_resting():
+            return
+        piece.state = State.idle
+        self._publish(RestEnded(piece.id, piece.position))
+        self._resting = [entry for entry in self._resting if entry.piece is not piece]
 
     def _vacate_departed_origins(self) -> None:
         """A mover has left its origin the instant its first step
@@ -238,7 +392,15 @@ class RealTimeArbiter:
         if piece.state == State.captured:
             return
         piece.state = rest_state
-        self._resting.append(RestingPiece(piece, stop_time_ms + REST_DURATION_MS[rest_state]))
+        rest_until_ms = stop_time_ms + REST_DURATION_MS[rest_state]
+        self._resting.append(RestingPiece(piece, rest_until_ms))
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # Keyed by the piece object itself (identity), not piece.id -
+            # piece.id is a caller-supplied label that several test fixtures
+            # (and, in principle, callers in general) do not guarantee is
+            # unique across pieces, and a collision there would let one
+            # piece's rest-release cancel another's.
+            self._events.schedule(rest_until_ms, EventKind.REST_END, piece, piece)
 
     def _release_expired_rests(self) -> None:
         """Return pieces whose rest has expired to State.idle. Runs once
@@ -296,7 +458,7 @@ class RealTimeArbiter:
         single-step abort degenerates to the pre-vacate MoveAborted
         behavior. If no square along the path is free, the piece has
         nowhere to stand and is removed."""
-        path = _path_cells(move.origin, move.target)
+        path = path_cells(move.origin, move.target)
         # Nearest-to-target first: path cells (excluding the contested
         # target) walked backwards, then origin as the final fallback.
         candidates = list(reversed(path[:-1])) + [move.origin]
@@ -317,112 +479,14 @@ class RealTimeArbiter:
     # Rules 2 & 3: temporal path-collision detection
     # ------------------------------------------------------------------
 
-    def _time_at_cell(self, move, path, cell):
-        """Absolute clock time at which `move`'s piece reaches `cell`
-        while travelling its current (fixed-speed) path from origin to
-        target. `path` is `_path_cells(move.origin, move.target)` - passed
-        in rather than recomputed, since every caller already has it."""
-        return move.start_time + (path.index(cell) + 1) * DEFAULT_MOVE_DELAY_MS
-
     def _resolve_path_collisions(self):
-        """Look for any two in-flight pieces whose paths cross, and
-        resolve the earliest crossing for each of them.
-        Handles both standard moving collisions and airborne interceptions.
-        """
+        """Look for any two in-flight pieces whose paths cross, and resolve
+        the earliest crossing for each of them (the pairwise scan itself
+        lives in real_time.collision_fates, pure and reusable by the
+        event-heap scheduler). Handles both standard moving collisions and
+        airborne interceptions."""
         moves = self.pending_moves
-        # id(move) -> (resolution_time, _CollisionOutcome, payload)
-        fate = {}
-
-        def consider(move, resolution_time, kind, payload):
-            current = fate.get(id(move))
-            if current is None or resolution_time < current[0]:
-                fate[id(move)] = (resolution_time, kind, payload)
-
-        for i in range(len(moves)):
-            for j in range(i + 1, len(moves)):
-                a, b = moves[i], moves[j]
-                path_a = _path_cells(a.origin, a.target)
-                path_b = _path_cells(b.origin, b.target)
-                
-                # For jumps, path is exactly the cell they are jumping on.
-                shared = set(path_a) & set(path_b)
-                if not shared:
-                    continue
-
-                is_a_airborne = a.piece.state == State.airborne
-                is_b_airborne = b.piece.state == State.airborne
-
-                # --- New Airborne Capture Logic ---
-                if is_a_airborne and not is_b_airborne:
-                    t_b = self._time_at_cell(b, path_b, a.origin)
-                    # Check if moving piece 'b' arrives during the 1000ms jump window
-                    if a.start_time <= t_b <= a.arrival_time:
-                        kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
-                        # The moving piece 'b' takes the fate (gets blocked or captured)
-                        payload = (path_b, a.origin, a.move_id) if kind == _CollisionOutcome.CAPTURE else (path_b, a.origin)
-                        consider(b, t_b, kind, payload)
-                    continue # Skip standard collision logic for this pair
-
-                if is_b_airborne and not is_a_airborne:
-                    t_a = self._time_at_cell(a, path_a, b.origin)
-                    # Check if moving piece 'a' arrives during the 1000ms jump window
-                    if b.start_time <= t_a <= b.arrival_time:
-                        kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
-                        # The moving piece 'a' takes the fate (gets blocked or captured)
-                        payload = (path_a, b.origin, b.move_id) if kind == _CollisionOutcome.CAPTURE else (path_a, b.origin)
-                        consider(a, t_a, kind, payload)
-                    continue # Skip standard collision logic for this pair
-
-                if is_a_airborne and is_b_airborne:
-                    continue # Two jumps cannot collide mid-air since they stay in place
-                # ----------------------------------
-
-                # --- Standard Collision Logic ---
-                # The earliest point, in real time, at which the two
-                # paths actually conflict
-                cell = min(
-                    shared,
-                    key=lambda c: max(
-                        self._time_at_cell(a, path_a, c),
-                        self._time_at_cell(b, path_b, c),
-                    ),
-                )
-                
-                t_a = self._time_at_cell(a, path_a, cell)
-                t_b = self._time_at_cell(b, path_b, cell)
-                resolution_time = max(t_a, t_b)
-                kind = _CollisionOutcome.TRUNCATE if a.piece.color == b.piece.color else _CollisionOutcome.CAPTURE
-
-                if kind == _CollisionOutcome.TRUNCATE:
-                    # Block (same color): the later piece stops. On an exact
-                    # tie (t_a == t_b) the move ordered first (lower move_id)
-                    # is treated as earlier and keeps going, so exactly one
-                    # side is ever truncated instead of both.
-                    if t_a == t_b:
-                        loser, loser_path = (
-                            (b, path_b) if a.move_id < b.move_id else (a, path_a)
-                        )
-                    elif t_a > t_b:
-                        loser, loser_path = a, path_a
-                    else:
-                        loser, loser_path = b, path_b
-                    consider(loser, resolution_time, kind, (loser_path, cell))
-                else:
-                    # Capture (different colors): the earlier piece is destroyed
-                    # by the later (surviving) piece's move. On an exact tie
-                    # the move ordered first (lower move_id) survives and
-                    # captures the other, instead of both being destroyed.
-                    if t_a == t_b:
-                        loser, loser_path, winner_move_id = (
-                            (b, path_b, a.move_id)
-                            if a.move_id < b.move_id
-                            else (a, path_a, b.move_id)
-                        )
-                    elif t_a < t_b:
-                        loser, loser_path, winner_move_id = a, path_a, b.move_id
-                    else:
-                        loser, loser_path, winner_move_id = b, path_b, a.move_id
-                    consider(loser, resolution_time, kind, (loser_path, cell, winner_move_id))
+        fates = compute_collision_fates(moves, DEFAULT_MOVE_DELAY_MS)
 
         king_captured = False
         for move in list(moves):
@@ -430,21 +494,18 @@ class RealTimeArbiter:
                 # Already dropped underneath us - e.g. its piece was
                 # marked captured while resolving another move's fate.
                 continue
-            outcome = fate.get(id(move))
-            if outcome is None:
+            fate = fates.get(move.move_id)
+            if fate is None:
                 continue
-            resolution_time, kind, payload = outcome
-            if kind == _CollisionOutcome.CAPTURE:
-                if resolution_time > self.clock:
+            if fate.outcome == CollisionOutcome.CAPTURE:
+                if fate.resolution_time > self.clock:
                     # The paths cross, but the pieces haven't actually
                     # reached the shared cell yet - re-derived and applied
                     # once self.clock catches up to resolution_time.
                     continue
-                path, cell, capturing_move_id = payload
-                king_captured = self._capture_in_flight(move, capturing_move_id) or king_captured
+                king_captured = self._capture_in_flight(move, fate.capturing_move_id) or king_captured
             else:
-                path, cell = payload
-                self._truncate_move(move, path, cell)
+                self._truncate_move(move, list(fate.path), fate.cell)
         return king_captured
 
     def _destroy_in_transit(self, move, capturing_move_id) -> bool:
@@ -485,8 +546,12 @@ class RealTimeArbiter:
             # square. arrival_time was just reset to start_time above, so
             # the rest anchors there.
             self._abort_move(move)
-            self.pending_moves.remove(move)
+            self._remove_move(move)
             return
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # Still travelling, but arrival_time just changed - the
+            # MOVE_DONE scheduled when this move was added is stale.
+            self._events.schedule(move.arrival_time, EventKind.MOVE_DONE, move.move_id, move)
         self._publish(MoveTruncated(
             move.move_id, move.piece.id, move.target, move.arrival_time, in_flight=True,
         ))

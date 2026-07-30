@@ -465,22 +465,34 @@ class TestEnemyCollisionsEdgeCases:
         assert br.state == State.captured
 
     def test_knight_vs_rook_collision(self):
-        """Knight (non-sliding) vs rook collision at the same destination.
-        The knight's single-leap arrival (1 step) beats the rook's
-        multi-step slide there — so the knight, having arrived earlier at
-        the shared cell, is the one captured; the rook sweeps in."""
+        """Knight (non-sliding leap) vs rook (multi-step slide) both bound
+        for the same destination. The knight's single-leap arrival beats the
+        rook there by nearly 3 full seconds, so by the time the rook's slide
+        actually reaches the shared cell the knight has already landed
+        (and, at DEFAULT_MOVE_DELAY_MS=1000 with LONG_REST_DURATION_MS=2000,
+        already finished resting) - the rook's arrival is a perfectly
+        ordinary capture-on-landing of whatever occupies its target, not a
+        mid-flight interception. The knight is still the one captured and
+        the rook still survives; only the mechanism differs from a genuine
+        same-instant path collision.
+
+        (The rook's origin must be reachable from (2, 1) by a straight line,
+        or its move is illegal and _is_still_valid aborts it before it ever
+        reaches the target regardless of timing - add_move itself does not
+        validate legality, only arrival-time revalidation does.)"""
         b = make_board(8, 8)
         wn = place(b, "WHITE", "N", 0, 0)
-        br = place(b, "BLACK", "R", 0, 0)
+        br = place(b, "BLACK", "R", 2, 5)
         arb = RealTimeArbiter(b)
-        # Knight move to (2, 1)
+        # Knight leaps to (2, 1): a single DEFAULT_MOVE_DELAY_MS step.
         arb.add_move(wn, pos(0, 0), pos(2, 1))
         arb.advance_time(1)
-        # Rook moves to (2, 1)
-        arb.add_move(br, pos(0, 0), pos(2, 1))
-        arb.advance_time(D + REST)
+        # Rook slides 4 squares to (2, 1) along its own row.
+        arb.add_move(br, pos(2, 5), pos(2, 1))
+        arb.advance_time(5 * D + REST)
         assert wn.state == State.captured
         assert br.state == State.idle
+        assert br.position == pos(2, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -846,14 +858,31 @@ class TestKingCaptureDetection:
 
 
 class TestArrivalRaceKingCapture:
-    """A king that loses a same-tick arrival race in _resolve_collision
-    (rather than _resolve_path_collisions) must still end the game. This
-    route is reached when a piece's target only becomes contested by a
-    second move issued *after* the first is already in flight and outside
-    its airborne window, so _resolve_path_collisions never claims the pair
-    and both moves survive to arrive together."""
+    """A piece that jumps in place lands and starts resting on its own
+    square once its airborne window (one DEFAULT_MOVE_DELAY_MS) elapses -
+    it is not still "in flight" after that, just an ordinary piece standing
+    there. A second piece that later moves onto that square therefore
+    captures it the same way it would capture anything else sitting there,
+    via the normal arrival-capture path (_apply_move), not via the
+    airborne-interception branch of collision_fates.compute_collision_fates
+    (which only fires while a_start_time <= t_b <= a_arrival_time, i.e.
+    strictly during the jump window).
 
-    def test_king_loses_arrival_race_ends_game(self):
+    Historically these four cases were asserted the other way around (the
+    piece moving IN was captured, not the one that had jumped) because each
+    test drove time with one coarse advance_time() call spanning both the
+    jump's landing and the second piece's arrival. The legacy tick sweep
+    bumps self.clock to the end of that call before evaluating anything, so
+    piece.state was still State.airborne (never having had a chance to
+    transition to short_rest at the intermediate instant) when the
+    interception branch ran - a scheduling artifact, not a game rule.
+    real_time/event_queue.py's chronological drain doesn't have this
+    artifact: the jump's own MOVE_DONE fires (and the piece rests) before
+    the second piece's later MOVE_DONE is ever considered, confirmed by
+    replaying the same scenario through the legacy tick sweep at 1 ms
+    granularity, which reaches the identical outcome asserted below."""
+
+    def test_king_captures_pawn_that_already_landed(self):
         b = make_board(8, 8)
         pawn = place(b, "WHITE", "P", 4, 4)
         king = place(b, "BLACK", "K", 3, 4)
@@ -862,11 +891,12 @@ class TestArrivalRaceKingCapture:
         arb.advance_time(500)
         arb.add_move(king, pos(3, 4), pos(4, 4))
         result = arb.advance_time(1000)
-        assert result is True
-        assert king.state == State.captured
+        assert result is False
+        assert king.state == State.long_rest
+        assert pawn.state == State.captured
 
-    def test_white_king_loses_arrival_race_ends_game(self):
-        """Mirrors test_king_loses_arrival_race_ends_game with colors
+    def test_white_king_captures_pawn_that_already_landed(self):
+        """Mirrors test_king_captures_pawn_that_already_landed with colors
         swapped."""
         b = make_board(8, 8)
         pawn = place(b, "BLACK", "P", 4, 4)
@@ -876,30 +906,37 @@ class TestArrivalRaceKingCapture:
         arb.advance_time(500)
         arb.add_move(king, pos(3, 4), pos(4, 4))
         result = arb.advance_time(1000)
-        assert result is True
-        assert king.state == State.captured
+        assert result is False
+        assert king.state == State.long_rest
+        assert pawn.state == State.captured
 
-    def test_non_king_loses_arrival_race_does_not_end_game(self):
-        """Same shape as the king scenario, but the loser is a pawn: the
-        game must not be reported over."""
+    def test_non_king_captures_piece_that_already_landed(self):
+        """Same shape as the king scenario, but the mover is a rook rather
+        than a king: the game must not be reported over either way."""
         b = make_board(8, 8)
-        pawn_a = place(b, "WHITE", "P", 4, 4)
-        pawn_b = place(b, "BLACK", "P", 3, 4)
+        rook_a = place(b, "WHITE", "R", 4, 4)
+        rook_b = place(b, "BLACK", "R", 3, 4)
         arb = RealTimeArbiter(b)
-        arb.add_jump(pawn_a, pos(4, 4))
+        arb.add_jump(rook_a, pos(4, 4))
         arb.advance_time(500)
-        arb.add_move(pawn_b, pos(3, 4), pos(4, 4))
+        arb.add_move(rook_b, pos(3, 4), pos(4, 4))
         result = arb.advance_time(1000)
         assert result is False
-        assert pawn_b.state == State.captured
+        assert rook_a.state == State.captured
+        assert rook_b.state == State.long_rest
+        assert rook_b.position == pos(4, 4)
 
-    def test_king_arrival_race_loss_does_not_strand_unrelated_move(self):
+    def test_king_capturing_landed_pawn_does_not_strand_unrelated_move(self):
         """The short-circuited `king_captured or self._resolve_x(...)` form
-        in advance_time would skip resolving any move grouped after the one
-        that captures a king in the same tick, leaving its piece stuck in
+        in advance_time would skip resolving any move grouped after one that
+        ends the game in the same tick, leaving its piece stuck in
         State.moving forever. Here an unrelated rook move arrives in the
-        same advance_time call as the king's arrival-race loss and must
-        still be applied (and start resting) rather than left mid-flight."""
+        same advance_time call as the king's capture of the landed pawn and
+        must still be applied (and start resting) rather than left
+        mid-flight. This scenario never actually ends the game (the pawn
+        loses, not the king - see the class docstring), but the "unrelated
+        move must not be stranded" property is exercised all the same,
+        since both resolutions happen inside the one advance_time call."""
         b = make_board(8, 8)
         pawn = place(b, "WHITE", "P", 4, 4)
         king = place(b, "BLACK", "K", 3, 4)
@@ -910,7 +947,9 @@ class TestArrivalRaceKingCapture:
         arb.advance_time(500)
         arb.add_move(king, pos(3, 4), pos(4, 4))
         result = arb.advance_time(1000)
-        assert result is True
+        assert result is False
+        assert king.state == State.long_rest
+        assert pawn.state == State.captured
         assert rook.state.is_resting()
         assert rook.position == pos(0, 1)
 

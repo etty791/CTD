@@ -503,7 +503,30 @@ class TestGhostMoveRegression:
         assert b.get_piece_at(pos(0, 7)) == black_second
         assert black_second.state == State.idle
 
-    def test_jump_never_vacates_and_still_intercepts_after_landing(self):
+    def test_jump_never_vacates_but_stops_intercepting_once_landed(self):
+        """An airborne piece is never vacated - it stays on the board for
+        its whole jump window (one DEFAULT_MOVE_DELAY_MS), still able to
+        intercept a mover that enters its square during that window
+        (real_time/collision_fates.py's airborne branch, gated on
+        a.start_time <= t <= a.arrival_time). Once that window closes it
+        lands and rests like any other piece - it does not go on guarding
+        its square forever. Here mover's own path only reaches (0, 0) on
+        its very last step, well after the jump has already landed (a
+        4-square slide starting 1ms after the jump takes 4000ms to arrive,
+        against the jump's 1000ms window), so this is an ordinary capture
+        of a resting piece, not an interception.
+
+        (This inverts what the test asserted before phase 2's event-heap
+        scheduler: driven by one advance_time(4000) call, the legacy tick
+        sweep bumped its clock to the end of that call before checking
+        anything, so `jumper.state` was still State.airborne - never having
+        had the chance to transition to short_rest partway through - when
+        the interception branch ran. That let the jumper "intercept" a
+        mover arriving 3 full seconds after its own airborne window
+        actually closed, which is a scheduling artifact, not a rule a piece
+        should have. Confirmed by replaying the same scenario through the
+        legacy tick sweep at 1 ms granularity, which reaches the identical
+        outcome asserted below.)"""
         b = empty_board(rows=1, cols=8)
         jumper = place(b, "BLACK", "ROOK", 0, 0)
         mover = place(b, "WHITE", "ROOK", 0, 4)
@@ -515,6 +538,6 @@ class TestGhostMoveRegression:
         assert b.get_piece_at(pos(0, 0)) == jumper
         arb.add_move(mover, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * DEFAULT_MOVE_DELAY_MS)
-        assert mover.state == State.captured
-        assert jumper.state != State.captured
-        assert b.get_piece_at(pos(0, 0)) == jumper
+        assert jumper.state == State.captured
+        assert mover.state != State.captured
+        assert b.get_piece_at(pos(0, 0)) == mover
