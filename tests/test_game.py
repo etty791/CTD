@@ -4,9 +4,13 @@ from model.board import Board
 from model.piece import Piece, Color, PieceType
 from model.position import Position
 from rules.rules_engine import MoveValidation
+from rules.rules_config import MoveReason
+from model.piece import State
 from game_engine.game import KungFuChessGame
+from events.event_bus import EventBus
+from events.game_events import GameStarted
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):
@@ -35,10 +39,35 @@ def pos(x, y):
 # ── move_request: same-origin-as-target ──────────────────────────────────────
 
 class TestMoveRequestSameSquare:
-    def test_returns_false(self):
+    def test_is_rejected(self):
         game, _ = make_game_with_piece()
         result = game.move_request(pos(0, 0), pos(0, 0))
-        assert not result.is_valid
+        assert result.is_valid is False
+
+    def test_rejection_reason_is_illegal_piece_move(self):
+        game, _ = make_game_with_piece()
+        result = game.move_request(pos(0, 0), pos(0, 0))
+        assert result.reason == MoveReason.ILLEGAL_PIECE_MOVE
+
+
+# ── event bus wiring ──────────────────────────────────────────────────────────
+
+class TestEvents:
+    def test_game_exposes_an_event_bus(self):
+        game, _ = make_game_with_piece()
+        assert isinstance(game.events, EventBus)
+
+    def test_game_start_publishes_game_started(self):
+        grid = empty_board()
+        grid[0][0] = make_piece("WHITE", "ROOK", 0, 0)
+
+        # Subscribing after construction can't observe the start-of-game
+        # publish, so patch EventBus.publish to capture it as it happens.
+        with patch.object(EventBus, "publish", autospec=True) as mock_publish:
+            KungFuChessGame(grid)
+
+        published_events = [call.args[1] for call in mock_publish.call_args_list]
+        assert any(isinstance(e, GameStarted) for e in published_events)
 
 
 # ── move_request: game already over ──────────────────────────────────────────
@@ -159,6 +188,39 @@ class TestWait:
         game.wait(2000)
         game.wait(3001)
         assert game.board.get_piece_at(pos(0, 5)) == piece
+
+
+# ── jump_request ──────────────────────────────────────────────────────────────
+
+class TestJumpRequest:
+    def test_jump_on_resting_piece_returns_reason_without_raising(self):
+        # Regression: line 45 previously referenced an undefined name, so a jump
+        # on a resting piece raised NameError instead of returning a validation.
+        game, piece = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        piece.state = State.long_rest
+        result = game.jump_request(pos(0, 0))
+        assert isinstance(result, MoveValidation)
+        assert not result.is_valid
+        assert result.reason == MoveReason.PIECE_RESTING
+
+    def test_jump_on_empty_cell_rejected(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        result = game.jump_request(pos(4, 4))
+        assert not result.is_valid
+        assert result.reason == MoveReason.EMPTY_SOURCE
+
+    def test_jump_after_game_over_rejected(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        game.finish_game()
+        result = game.jump_request(pos(0, 0))
+        assert not result.is_valid
+        assert result.reason == MoveReason.GAME_OVER
+
+    def test_jump_on_idle_piece_accepted(self):
+        game, _ = make_game_with_piece("WHITE", "ROOK", 0, 0)
+        result = game.jump_request(pos(0, 0))
+        assert result.is_valid
+        assert result.reason == MoveReason.OK
 
 
 # ── initial state ─────────────────────────────────────────────────────────────

@@ -2,27 +2,31 @@
 Comprehensive collision rule tests for RealTimeArbiter.
 
 Rules under test:
-  - Enemy collisions: The piece that CAME FIRST (started first) is captured.
-    The piece that CAME LATER wins and continues unaffected.
-  - Friendly collisions: The piece that came LATER is truncated —
-    it stops one square before the shared cell. If the collision is on the first step,
-    the move is cancelled entirely.
+  - Enemy collisions: whichever piece ARRIVES at the shared cell EARLIER
+    is captured. The piece that arrives later sweeps through and
+    continues to its own target unaffected.
+  - Friendly collisions: The piece that arrives at the shared cell LATER
+    is truncated — it stops one square before the shared cell. If the
+    collision is on the first step, the move is cancelled entirely.
+
+Note: a piece never returns to State.idle immediately on arrival — it
+passes through long_rest/short_rest first (see CLAUDE.md). Tests that
+assert State.idle advance time past DEFAULT_MOVE_DELAY_MS * distance +
+LONG_REST_DURATION_MS (aliased REST below) so the rest has expired too.
 """
 import pytest
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from model.piece import Piece, PieceType, State, Color
 from model.position import Position
-from real_time.real_time_arbiter import (
-    RealTimeArbiter,
-    DEFAULT_MOVE_DELAY_MS,
-    LONG_REST_DURATION_MS,
-)
+from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
+from real_time.real_time_config import LONG_REST_DURATION_MS
 
 D = DEFAULT_MOVE_DELAY_MS
+REST = LONG_REST_DURATION_MS
 
 
 def make_board(rows=1, cols=8):
-    return Board([[EMPTY_CELL] * cols for _ in range(rows)])
+    return Board([[None] * cols for _ in range(rows)])
 
 
 def place(board, color, type, x, y):
@@ -65,8 +69,7 @@ class TestEnemyCollisionsComprehensive:
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 5))
         arb.add_move(br, pos(1, 5), pos(1, 0))
-        arb.advance_time(5 * D)
-        arb.advance_time(LONG_REST_DURATION_MS)
+        arb.advance_time(5 * D + REST)
         # Different rows, no collision
         assert wr.state == State.idle
         assert br.state == State.idle
@@ -85,7 +88,9 @@ class TestEnemyCollisionsComprehensive:
         assert b.get_piece_at(pos(1, 7)) == br
 
     def test_enemy_collision_pieces_at_mid_path(self):
-        """Enemy collision occurs mid-path, not at destination."""
+        """Enemy collision occurs mid-path, not at destination. br has less
+        ground to cover to their shared cell (col 6) and arrives first, so
+        it's captured; wr sweeps through to its own target."""
         b = make_board(1, 12)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 11)
@@ -93,10 +98,9 @@ class TestEnemyCollisionsComprehensive:
         arb.add_move(wr, pos(0, 0), pos(0, 6))   # 6 steps, arrives at t=6*D
         arb.advance_time(1)
         arb.add_move(br, pos(0, 11), pos(0, 5))  # 6 steps, arrives at t=1+6*D
-        arb.advance_time(6 * D)
-        arb.advance_time(LONG_REST_DURATION_MS)
-        # They don't share same destination
-        assert wr.state == State.idle or br.state == State.idle
+        arb.advance_time(6 * D + REST)
+        assert wr.state == State.idle
+        assert br.state == State.captured
 
     def test_different_piece_types_collision(self):
         """Queen vs Rook (different piece types) collision."""
@@ -110,7 +114,7 @@ class TestEnemyCollisionsComprehensive:
         arb.advance_time(7 * D)
         # One should reach destination, one should be captured or blocked
         total_on_board = sum(1 for pos_x in range(1) for pos_y in range(8)
-                             if b.get_piece_at(pos(pos_x, pos_y)) != EMPTY_CELL)
+                             if b.get_piece_at(pos(pos_x, pos_y)) is not None)
         assert total_on_board >= 1
 
 
@@ -122,7 +126,9 @@ class TestFriendlyCollisionsComprehensive:
     """Comprehensive tests for friendly piece collisions."""
 
     def test_friendly_head_on_blocker_truncated(self):
-        """First friendly piece moves, second friendly is blocked and truncated."""
+        """wr1 has the longer remaining path to their shared cell and is
+        truncated (stops at col 4); once it comes to rest there it blocks
+        wr2's own path too, so wr2 never reaches (0,0) either."""
         b = make_board(1, 10)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 9)
@@ -130,10 +136,10 @@ class TestFriendlyCollisionsComprehensive:
         arb.add_move(wr1, pos(0, 0), pos(0, 9))
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 9), pos(0, 0))
-        arb.advance_time(9 * D)
-        arb.advance_time(LONG_REST_DURATION_MS)
+        arb.advance_time(9 * D + REST)
         # wr2 should be blocked (not reach (0,0))
         assert wr2.state == State.idle
+        assert b.get_piece_at(pos(0, 0)) != wr2
 
     def test_friendly_first_step_blocked_move_cancelled(self):
         """When first step is blocked, move is cancelled."""
@@ -211,8 +217,8 @@ class TestMixedCollisionScenarios:
         arb.add_move(br2, pos(1, 7), pos(1, 0))
         arb.advance_time(7 * D)
         # Each row should have at least one piece
-        row0_pieces = [b.get_piece_at(pos(0, y)) for y in range(8) if b.get_piece_at(pos(0, y)) != EMPTY_CELL]
-        row1_pieces = [b.get_piece_at(pos(1, y)) for y in range(8) if b.get_piece_at(pos(1, y)) != EMPTY_CELL]
+        row0_pieces = [b.get_piece_at(pos(0, y)) for y in range(8) if b.get_piece_at(pos(0, y)) is not None]
+        row1_pieces = [b.get_piece_at(pos(1, y)) for y in range(8) if b.get_piece_at(pos(1, y)) is not None]
         assert len(row0_pieces) >= 1 and len(row1_pieces) >= 1
 
     def test_unrelated_piece_unaffected_by_distant_collision(self):
@@ -246,8 +252,8 @@ class TestMixedCollisionScenarios:
         arb.advance_time(7 * D)
         # Row 0 should have at least one piece (enemy collision resolved)
         # Row 1 should have at least one piece (friendly collision resolved)
-        row0_pieces = sum(1 for y in range(8) if b.get_piece_at(pos(0, y)) != EMPTY_CELL)
-        row1_pieces = sum(1 for y in range(8) if b.get_piece_at(pos(1, y)) != EMPTY_CELL)
+        row0_pieces = sum(1 for y in range(8) if b.get_piece_at(pos(0, y)) is not None)
+        row1_pieces = sum(1 for y in range(8) if b.get_piece_at(pos(1, y)) is not None)
         assert row0_pieces >= 1 and row1_pieces >= 1
 
 
@@ -328,8 +334,7 @@ class TestTimingAndArrivalCases:
         wr = place(b, "WHITE", "R", 0, 0)
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 9))
-        arb.advance_time(9 * D)
-        arb.advance_time(LONG_REST_DURATION_MS)
+        arb.advance_time(9 * D + REST)
         # Completed
         assert wr.state == State.idle
 
@@ -342,8 +347,7 @@ class TestTimingAndArrivalCases:
         arb.add_move(wr, pos(0, 0), pos(0, 2))
         arb.advance_time(1)
         arb.add_move(br, pos(0, 2), pos(0, 0))
-        arb.advance_time(2 * D)
-        arb.advance_time(LONG_REST_DURATION_MS)
+        arb.advance_time(2 * D + REST)
         # Collision should occur
         survivors = sum(1 for p in [wr, br] if p.state == State.idle)
         captured = sum(1 for p in [wr, br] if p.state == State.captured)
@@ -368,7 +372,7 @@ class TestBoardBoundaryCollisions:
         arb.add_move(br, pos(7, 0), pos(0, 0))
         arb.advance_time(7 * D)
         # One should reach the corner
-        assert b.get_piece_at(pos(0, 0)) != EMPTY_CELL
+        assert b.get_piece_at(pos(0, 0)) is not None
 
     def test_movement_along_board_edge(self):
         """Movements along board edge (boundary row/col)."""

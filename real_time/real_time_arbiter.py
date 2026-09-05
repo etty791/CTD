@@ -1,10 +1,28 @@
 from dataclasses import dataclass
+from typing import Optional
 
-from model.board import EMPTY_CELL
-from model.piece import Piece, PieceType, State
-from rules.rules_engine import validate_move
+from model.piece import Piece, PieceType, Color, State
+from rules.promotion import is_promotion_square
+from rules.rules_engine import validate_piece_move
 from model.position import Position
+from real_time.collision_fates import CollisionOutcome, compute_collision_fates, path_cells
+from real_time.event_queue import EventKind, EventQueue
 from real_time.real_time_config import *
+from events.event_bus import EventBus
+from events.game_events import (
+    GameEnded,
+    MoveAborted,
+    MoveCompleted,
+    MoveStarted,
+    MoveTruncated,
+    PieceCaptured,
+    RestEnded,
+)
+from observability.metrics import counter
+from observability.metrics_config import ARBITER_EVENTS_TOTAL, ARBITER_MOVES_TOTAL, LABEL_EVENT
+
+_arbiter_events_total = counter(ARBITER_EVENTS_TOTAL, (LABEL_EVENT,))
+_arbiter_moves_total = counter(ARBITER_MOVES_TOTAL)
 
 REST_DURATION_MS = {
     State.long_rest: LONG_REST_DURATION_MS,
@@ -12,17 +30,21 @@ REST_DURATION_MS = {
 }
 
 class Move:
-    def __init__(self, piece, origin, target, arrival_time, start_time):
+    def __init__(self, piece, origin, target, arrival_time, start_time, move_id):
         self.piece = piece
         self.origin = origin
         self.target = target
         self.arrival_time = arrival_time
         self.start_time = start_time
+        self.move_id = move_id
 
 @dataclass
 class RestingPiece:
     piece: Piece
     rest_until_ms: int
+
+def _opposite_color(color: Color) -> Color:
+    return Color.BLACK if color == Color.WHITE else Color.WHITE
 
 def _is_straight_line(origin, target):
     """True if target is reachable from origin along a single rook/bishop
@@ -31,34 +53,11 @@ def _is_straight_line(origin, target):
     dy = target.y - origin.y
     return dx == 0 or dy == 0 or abs(dx) == abs(dy)
 
-def _path_cells(origin, target):
-    """Returns all cells along the straight path from origin to target
-    (exclusive of origin, inclusive of target).
-
-    Moves that are not a straight line or 45-degree diagonal (e.g. a
-    knight's jump) have no intermediate squares to slide through, so we
-    return just the target. Treating them as a sliding move would make the
-    unit-step walk below never reach the target (infinite loop).
-    """
-
-    if not _is_straight_line(origin, target):
-        return [target]
-
-    dx = 0 if target.x == origin.x else (1 if target.x > origin.x else -1)
-    dy = 0 if target.y == origin.y else (1 if target.y > origin.y else -1)
-    cells = []
-    cur = Position(origin.x + dx, origin.y + dy)
-    while cur != target:
-        cells.append(cur)
-        cur = Position(cur.x + dx, cur.y + dy)
-    cells.append(target)
-    return cells
-
 def _move_distance(origin, target):
     """Number of animation 'steps' a move takes, used for arrival timing.
     Sliding moves take one step per square; a non-sliding jump (e.g. a
     knight) is a single leap regardless of its Chebyshev distance, matching
-    the single-cell path returned by _path_cells for such moves.
+    the single-cell path returned by path_cells for such moves.
     """
     if origin == target:
         return 0
@@ -68,11 +67,86 @@ def _move_distance(origin, target):
 
 class RealTimeArbiter:
 
-    def __init__(self, board):
+    def __init__(
+        self,
+        board,
+        event_bus: Optional[EventBus] = None,
+        scheduler: SchedulerKind = DEFAULT_SCHEDULER,
+    ):
         self.board = board
         self.pending_moves = []
         self.clock = 0
         self._resting: list[RestingPiece] = []
+        self._next_move_id = 1
+        self.event_bus = event_bus
+        self._scheduler_kind = scheduler
+        # Only populated (and only consulted) in EVENT_HEAP mode; harmless
+        # and unused otherwise. See real_time/event_queue.py.
+        self._events = EventQueue()
+
+    def _new_move_id(self) -> int:
+        move_id = self._next_move_id
+        self._next_move_id += 1
+        return move_id
+
+    def _publish(self, event) -> None:
+        """No-op when no event_bus was provided, so callers/tests never
+        have to construct one just to use the arbiter."""
+        _arbiter_events_total.inc(event=type(event).__name__)
+        if self.event_bus is not None:
+            self.event_bus.publish(event)
+
+    def _record_capture(self, captured_piece: Piece, capturing_move_id: int) -> None:
+        """Publish PieceCaptured for `captured_piece`, attributing it to the
+        move (`capturing_move_id`) whose arrival or path caused the capture -
+        scoring itself is not the arbiter's concern; see ScoreTracker."""
+        self._publish(PieceCaptured(
+            captured_piece.id, captured_piece.type, captured_piece.color,
+            captured_piece.position, capturing_move_id,
+        ))
+
+    def _mark_captured(self, piece: Piece, capturing_move_id: int) -> None:
+        """The one place a piece dies. Idempotent - a piece already marked
+        captured (e.g. its old path gets swept a second time before the
+        ghost is fully cleaned up) is left alone, so it is never announced
+        or scored twice. Evicts the piece's own pending move (if any) so a
+        corpse can no longer truncate, capture, or be captured again."""
+        if piece.state == State.captured:
+            return
+        piece.state = State.captured
+        self._record_capture(piece, capturing_move_id)
+        self._drop_moves_for(piece)
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # A piece captured mid-rest would otherwise leave a stale
+            # REST_END scheduled; harmless (the handler no-ops on a
+            # non-resting piece) but cancelled anyway for hygiene.
+            self._events.cancel(EventKind.REST_END, piece)
+
+    def _drop_moves_for(self, piece: Piece) -> None:
+        """Remove every pending Move belonging to `piece` - called the
+        instant a piece dies so its stale move can never again be swept up
+        as if the piece were still travelling."""
+        for move in [m for m in self.pending_moves if m.piece is piece]:
+            self._remove_move(move)
+
+    def _remove_move(self, move) -> None:
+        """Drop `move` from pending_moves and, in EVENT_HEAP mode, cancel
+        whatever COLLISION/VACATE/MOVE_DONE is still scheduled for it - the
+        one place every move-removal path funnels through, so a dead move
+        can never again be popped off the heap and acted on."""
+        if move in self.pending_moves:
+            self.pending_moves.remove(move)
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            self._events.cancel(EventKind.COLLISION, move.move_id)
+            self._events.cancel(EventKind.VACATE, move.move_id)
+            self._events.cancel(EventKind.MOVE_DONE, move.move_id)
+
+    def _place_piece(self, position: Position, piece: Piece) -> None:
+        """Land `piece` on `position` and apply promotion - the arbiter's
+        job, not Board's, since promotion is a rule (rules/promotion.py)."""
+        self.board.place_piece(position, piece)
+        if is_promotion_square(self.board, piece):
+            piece.type = PieceType.QUEEN
 
     def add_move(self, piece, origin, target):
         # --- Rule 1: Movement Lock (Debounce) ---
@@ -101,32 +175,210 @@ class RealTimeArbiter:
 
         distance = _move_distance(origin, target)
         arrival_time = self.clock + (distance * DEFAULT_MOVE_DELAY_MS)
-        move = Move(piece, origin, target, arrival_time, self.clock)
+        move = Move(piece, origin, target, arrival_time, self.clock, self._new_move_id())
         piece.state = State.moving
         self.pending_moves.append(move)
+        _arbiter_moves_total.inc()
+        self._publish(MoveStarted(
+            move.move_id, piece.id, origin, target, move.start_time, move.arrival_time,
+        ))
+        self._schedule_move(move)
         return True
-    
+
     def add_jump(self, piece, pos):
         if piece.state != State.idle:
             return False
         arrival_time = self.clock + DEFAULT_MOVE_DELAY_MS
-        move = Move(piece, pos, pos, arrival_time, self.clock)
+        move = Move(piece, pos, pos, arrival_time, self.clock, self._new_move_id())
         piece.state = State.airborne
         self.pending_moves.append(move)
+        _arbiter_moves_total.inc()
+        self._publish(MoveStarted(
+            move.move_id, piece.id, pos, pos, move.start_time, move.arrival_time,
+        ))
+        self._schedule_move(move)
         return True
-    
+
+    def _schedule_move(self, move) -> None:
+        """EVENT_HEAP mode only: give a freshly-added move its VACATE (if it
+        actually leaves its origin) and MOVE_DONE events, then recompute
+        every pending move's collision fate from scratch - the newcomer may
+        have changed who collides with whom."""
+        if self._scheduler_kind != SchedulerKind.EVENT_HEAP:
+            return
+        if move.origin != move.target:
+            self._events.schedule(
+                move.start_time + DEFAULT_MOVE_DELAY_MS, EventKind.VACATE, move.move_id, move
+            )
+        self._events.schedule(move.arrival_time, EventKind.MOVE_DONE, move.move_id, move)
+        self._recompute_fates()
+
     def advance_time(self, ms):
+        target_ms = self.clock + ms
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            return self._advance_to_event_heap(target_ms)
+        return self._advance_time_tick_sweep(ms)
+
+    def _advance_time_tick_sweep(self, ms):
         king_captured = False
         self.clock += ms
         king_captured = self._resolve_path_collisions() or king_captured
+        self._vacate_departed_origins()
         arrived = self._pop_arrived_moves()
         for target, moves in self._group_by_target(arrived).items():
             if len(moves) > 1:
-                king_captured = king_captured or self._resolve_collision(moves, target)
+                king_captured = self._resolve_collision(moves, target) or king_captured
             else:
-                king_captured = king_captured or self._resolve_single(moves[0])
+                king_captured = self._resolve_single(moves[0]) or king_captured
         self._release_expired_rests()
         return king_captured
+
+    # ------------------------------------------------------------------
+    # Event-heap scheduler (MIGRATION.md phase 2)
+    # ------------------------------------------------------------------
+
+    def next_event_time(self) -> Optional[int]:
+        """EVENT_HEAP mode only: the clock time of the earliest pending
+        event, or None if the game is fully settled (nothing scheduled).
+        Lets a caller (server/game_shard.py) park a game's wake instead of
+        polling it every tick."""
+        return self._events.peek_time()
+
+    def _advance_to_event_heap(self, target_ms: int) -> bool:
+        """Drain every event up to and including `target_ms`, advancing
+        `self.clock` to each one's own time as it is handled (so timing
+        anchored to move.start_time/arrival_time - _begin_rest chief among
+        them - is unaffected by how coarsely advance_time was called), then
+        snapping to target_ms once the heap is empty or has nothing left
+        due. Events sharing one millisecond are handled in
+        EventKind priority order (see event_queue.py's docstring): every
+        COLLISION first, then a fate recompute (a capture can change who
+        else collides), then VACATE, then MOVE_DONE (batched together so
+        simultaneous arrivals at one target still go through
+        _resolve_collision), then REST_END."""
+        king_captured = False
+        while True:
+            time_ms = self._events.peek_time()
+            if time_ms is None or time_ms > target_ms:
+                break
+            self.clock = time_ms
+            due = self._events.pop_due_at(time_ms)
+            collisions = [e for e in due if e.kind == EventKind.COLLISION]
+            vacates = [e for e in due if e.kind == EventKind.VACATE]
+            arrivals = [e for e in due if e.kind == EventKind.MOVE_DONE]
+            rest_ends = [e for e in due if e.kind == EventKind.REST_END]
+
+            for event in collisions:
+                king_captured = self._handle_collision_event(event.key, event.payload) or king_captured
+            if collisions:
+                self._recompute_fates()
+
+            for event in vacates:
+                self._handle_vacate_event(event.key)
+
+            if arrivals:
+                king_captured = self._handle_move_done_batch(arrivals) or king_captured
+                self._recompute_fates()
+
+            for event in rest_ends:
+                self._handle_rest_end_event(event.payload)
+        self.clock = target_ms
+        return king_captured
+
+    def _recompute_fates(self) -> None:
+        """EVENT_HEAP mode only: recompute every pending move's collision
+        fate from one pairwise scan (real_time.collision_fates - the same
+        scan the legacy sweep ran every tick) and apply it - a single pass,
+        deliberately not iterated to a fixed point. A truncation found in
+        this pass can itself change another move's path, but legacy never
+        re-scans within one call either: it applies whatever one
+        `_resolve_path_collisions` call finds and leaves any second-order
+        effect to be discovered independently, generally by the untouched
+        move's own arrival-time revalidation (`_is_still_valid`, which
+        already rejects a path blocked by a piece that has since landed in
+        it, and `_retreat_vacated_move`). Iterating here to a fixed point
+        would let one truncation cascade into pre-emptively truncating a
+        second move that legacy only ever discovers via that arrival-time
+        path - a real behavioral divergence caught by
+        tests/test_collisions.py's TestFriendlyCollisionsEdgeCases, not a
+        timing artifact like the ones documented in
+        tests/test_scheduler_equivalence.py. CAPTURE fates are (re)scheduled
+        as COLLISION events at their resolution_time rather than applied
+        here - the event fires and actually destroys the piece once the
+        clock reaches it."""
+        fates = compute_collision_fates(self.pending_moves, DEFAULT_MOVE_DELAY_MS)
+        for move in list(self.pending_moves):
+            fate = fates.get(move.move_id)
+            if fate is not None and fate.outcome == CollisionOutcome.TRUNCATE:
+                self._truncate_move(move, list(fate.path), fate.cell)
+
+        for move in self.pending_moves:
+            fate = fates.get(move.move_id)
+            if fate is not None and fate.outcome == CollisionOutcome.CAPTURE:
+                self._events.schedule(
+                    fate.resolution_time, EventKind.COLLISION, move.move_id, fate.capturing_move_id
+                )
+            else:
+                self._events.cancel(EventKind.COLLISION, move.move_id)
+
+    def _find_move(self, move_id: int):
+        for move in self.pending_moves:
+            if move.move_id == move_id:
+                return move
+        return None
+
+    def _handle_collision_event(self, move_id: int, capturing_move_id: int) -> bool:
+        move = self._find_move(move_id)
+        if move is None:
+            return False  # superseded - the move already left pending_moves
+        return self._capture_in_flight(move, capturing_move_id)
+
+    def _handle_vacate_event(self, move_id: int) -> None:
+        move = self._find_move(move_id)
+        if move is None:
+            return
+        if move.piece.state == State.airborne or move.origin == move.target:
+            return
+        if self.board.get_piece_at(move.origin) == move.piece:
+            self.board.set_piece_at(move.origin, None)
+
+    def _handle_move_done_batch(self, events) -> bool:
+        arrived = []
+        for event in events:
+            move = self._find_move(event.key)
+            if move is None:
+                continue
+            self._remove_move(move)
+            arrived.append(move)
+
+        king_captured = False
+        for target, moves in self._group_by_target(arrived).items():
+            if len(moves) > 1:
+                king_captured = self._resolve_collision(moves, target) or king_captured
+            else:
+                king_captured = self._resolve_single(moves[0]) or king_captured
+        return king_captured
+
+    def _handle_rest_end_event(self, piece: Piece) -> None:
+        if not piece.state.is_resting():
+            return
+        piece.state = State.idle
+        self._publish(RestEnded(piece.id, piece.position))
+        self._resting = [entry for entry in self._resting if entry.piece is not piece]
+
+    def _vacate_departed_origins(self) -> None:
+        """A mover has left its origin the instant its first step
+        completes (start_time + DEFAULT_MOVE_DELAY_MS) - per the user's
+        occupancy rule, other pieces then treat that square as empty:
+        passable and landable. Jumps never vacate (origin == target, and
+        the piece stays there, airborne, for the whole window so it can
+        keep intercepting)."""
+        for move in self.pending_moves:
+            if move.piece.state == State.airborne or move.origin == move.target:
+                continue
+            first_step_time = move.start_time + DEFAULT_MOVE_DELAY_MS
+            if self.clock >= first_step_time and self.board.get_piece_at(move.origin) == move.piece:
+                self.board.set_piece_at(move.origin, None)
 
     # ------------------------------------------------------------------
     # Rest (cooldown) handling
@@ -140,7 +392,15 @@ class RealTimeArbiter:
         if piece.state == State.captured:
             return
         piece.state = rest_state
-        self._resting.append(RestingPiece(piece, stop_time_ms + REST_DURATION_MS[rest_state]))
+        rest_until_ms = stop_time_ms + REST_DURATION_MS[rest_state]
+        self._resting.append(RestingPiece(piece, rest_until_ms))
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # Keyed by the piece object itself (identity), not piece.id -
+            # piece.id is a caller-supplied label that several test fixtures
+            # (and, in principle, callers in general) do not guarantee is
+            # unique across pieces, and a collision there would let one
+            # piece's rest-release cancel another's.
+            self._events.schedule(rest_until_ms, EventKind.REST_END, piece, piece)
 
     def _release_expired_rests(self) -> None:
         """Return pieces whose rest has expired to State.idle. Runs once
@@ -154,123 +414,121 @@ class RealTimeArbiter:
                 continue
             if entry.rest_until_ms <= self.clock:
                 entry.piece.state = State.idle
+                self._publish(RestEnded(entry.piece.id, entry.piece.position))
             else:
                 still_resting.append(entry)
         self._resting = still_resting
+
+    def _abort_move(self, move) -> None:
+        """End a move that does not complete as planned. Shared by every
+        abort site: blocked before its first step, losing a same-color
+        arrival race, or failing revalidation on arrival.
+
+        Two cases, distinguished by whether the piece ever vacated its
+        origin (board state is the single source of truth for this - see
+        _vacate_departed_origins):
+
+        - Never vacated (still standing on origin - true for a jump, which
+          never vacates, or a slide blocked before its first step; proof:
+          a truncate-to-origin is only ever assigned when the blocker
+          arrives at or before the first-step instant): unchanged from
+          before - the piece rests right where it stands and MoveAborted
+          is published. Defensive guard: if the origin cell was somehow
+          not held by the piece, put it back rather than losing it.
+        - Already vacated: per the user's rule it never returns to origin -
+          it retreats instead (see _retreat_vacated_move).
+        """
+        if move.piece.state == State.captured:
+            # Already destroyed (and already announced via PieceCaptured):
+            # there is no resting piece left to report.
+            return
+        if move.origin == move.target or self.board.get_piece_at(move.origin) == move.piece:
+            if move.origin != move.target and self.board.get_piece_at(move.origin) != move.piece:
+                self._place_piece(move.origin, move.piece)
+            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+            self._publish(MoveAborted(move.move_id, move.piece.id, move.origin))
+            return
+        self._retreat_vacated_move(move)
+
+    def _retreat_vacated_move(self, move) -> None:
+        """A vacated piece that cannot complete its move does not return to
+        origin. It stops on the nearest free square walking backwards from
+        its (contested/illegal) target along its own path - for a
+        one-square move that is the origin itself, which is why a
+        single-step abort degenerates to the pre-vacate MoveAborted
+        behavior. If no square along the path is free, the piece has
+        nowhere to stand and is removed."""
+        path = path_cells(move.origin, move.target)
+        # Nearest-to-target first: path cells (excluding the contested
+        # target) walked backwards, then origin as the final fallback.
+        candidates = list(reversed(path[:-1])) + [move.origin]
+        for cell in candidates:
+            if self.board.is_cell_empty(cell):
+                self._place_piece(cell, move.piece)
+                self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+                self._publish(MoveTruncated(
+                    move.move_id, move.piece.id, cell, move.arrival_time, in_flight=False,
+                ))
+                return
+        # Not believed reachable (the origin is always a candidate and,
+        # per the vacate proof, is free unless something else has already
+        # landed there) - but must not crash if it somehow happens.
+        self._mark_captured(move.piece, move.move_id)
 
     # ------------------------------------------------------------------
     # Rules 2 & 3: temporal path-collision detection
     # ------------------------------------------------------------------
 
-    def _time_at_cell(self, move, path, cell):
-        """Absolute clock time at which `move`'s piece reaches `cell`
-        while travelling its current (fixed-speed) path from origin to
-        target. `path` is `_path_cells(move.origin, move.target)` - passed
-        in rather than recomputed, since every caller already has it."""
-        return move.start_time + (path.index(cell) + 1) * DEFAULT_MOVE_DELAY_MS
-
     def _resolve_path_collisions(self):
-        """Look for any two in-flight pieces whose paths cross, and
-        resolve the earliest crossing for each of them.
-        Handles both standard moving collisions and airborne interceptions.
-        """
+        """Look for any two in-flight pieces whose paths cross, and resolve
+        the earliest crossing for each of them (the pairwise scan itself
+        lives in real_time.collision_fates, pure and reusable by the
+        event-heap scheduler). Handles both standard moving collisions and
+        airborne interceptions."""
         moves = self.pending_moves
-        # id(move) -> (resolution_time, 'capture' | 'truncate', payload)
-        fate = {}
-
-        def consider(move, resolution_time, kind, payload):
-            current = fate.get(id(move))
-            if current is None or resolution_time < current[0]:
-                fate[id(move)] = (resolution_time, kind, payload)
-
-        for i in range(len(moves)):
-            for j in range(i + 1, len(moves)):
-                a, b = moves[i], moves[j]
-                path_a = _path_cells(a.origin, a.target)
-                path_b = _path_cells(b.origin, b.target)
-                
-                # For jumps, path is exactly the cell they are jumping on.
-                shared = set(path_a) & set(path_b)
-                if not shared:
-                    continue
-
-                is_a_airborne = a.piece.state == State.airborne
-                is_b_airborne = b.piece.state == State.airborne
-
-                # --- New Airborne Capture Logic ---
-                if is_a_airborne and not is_b_airborne:
-                    t_b = self._time_at_cell(b, path_b, a.origin)
-                    # Check if moving piece 'b' arrives during the 1000ms jump window
-                    if a.start_time <= t_b <= a.arrival_time:
-                        kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
-                        # The moving piece 'b' takes the fate (gets blocked or captured)
-                        consider(b, t_b, kind, (path_b, a.origin))
-                    continue # Skip standard collision logic for this pair
-
-                if is_b_airborne and not is_a_airborne:
-                    t_a = self._time_at_cell(a, path_a, b.origin)
-                    # Check if moving piece 'a' arrives during the 1000ms jump window
-                    if b.start_time <= t_a <= b.arrival_time:
-                        kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
-                        # The moving piece 'a' takes the fate (gets blocked or captured)
-                        consider(a, t_a, kind, (path_a, b.origin))
-                    continue # Skip standard collision logic for this pair
-
-                if is_a_airborne and is_b_airborne:
-                    continue # Two jumps cannot collide mid-air since they stay in place
-                # ----------------------------------
-
-                # --- Standard Collision Logic ---
-                # The earliest point, in real time, at which the two
-                # paths actually conflict
-                cell = min(
-                    shared,
-                    key=lambda c: max(
-                        self._time_at_cell(a, path_a, c),
-                        self._time_at_cell(b, path_b, c),
-                    ),
-                )
-                
-                t_a = self._time_at_cell(a, path_a, cell)
-                t_b = self._time_at_cell(b, path_b, cell)
-                resolution_time = max(t_a, t_b)
-                kind = 'truncate' if a.piece.color == b.piece.color else 'capture'
-
-                if kind == 'truncate':
-                    # Block (same color): the later piece stops
-                    if t_a >= t_b:
-                        consider(a, resolution_time, kind, (path_a, cell))
-                    if t_b >= t_a:
-                        consider(b, resolution_time, kind, (path_b, cell))
-                else:
-                    # Capture (different colors): the earlier piece is destroyed
-                    if t_a <= t_b:
-                        consider(a, resolution_time, kind, (path_a, cell))
-                    if t_b <= t_a:
-                        consider(b, resolution_time, kind, (path_b, cell))
+        fates = compute_collision_fates(moves, DEFAULT_MOVE_DELAY_MS)
 
         king_captured = False
         for move in list(moves):
-            outcome = fate.get(id(move))
-            if outcome is None:
+            if move not in self.pending_moves:
+                # Already dropped underneath us - e.g. its piece was
+                # marked captured while resolving another move's fate.
                 continue
-            _, kind, payload = outcome
-            if kind == 'capture':
-                if move.piece.type == PieceType.KING:
-                    king_captured = True
-                self._capture_in_flight(move)
+            fate = fates.get(move.move_id)
+            if fate is None:
+                continue
+            if fate.outcome == CollisionOutcome.CAPTURE:
+                if fate.resolution_time > self.clock:
+                    # The paths cross, but the pieces haven't actually
+                    # reached the shared cell yet - re-derived and applied
+                    # once self.clock catches up to resolution_time.
+                    continue
+                king_captured = self._capture_in_flight(move, fate.capturing_move_id) or king_captured
             else:
-                path, cell = payload
-                self._truncate_move(move, path, cell)
+                self._truncate_move(move, list(fate.path), fate.cell)
         return king_captured
 
-    def _capture_in_flight(self, move):
-        """A piece is destroyed mid-transit by an opposite-color piece
-        that reaches their shared square later than it does."""
-        move.piece.state = State.captured
+    def _destroy_in_transit(self, move, capturing_move_id) -> bool:
+        """Destroy a piece that lost a race for a shared square while still
+        mid-flight. Returns True if it was a king (publishing GameEnded for
+        the surviving side), so every caller propagates game-over
+        identically. _mark_captured is idempotent and evicts the piece's
+        own pending move, so callers need not touch pending_moves
+        themselves."""
         if self.board.get_piece_at(move.origin) == move.piece:
-            self.board.set_piece_at(move.origin, EMPTY_CELL)
-        self.pending_moves.remove(move)
+            self.board.set_piece_at(move.origin, None)
+        self._mark_captured(move.piece, capturing_move_id)
+        if move.piece.type == PieceType.KING:
+            self._publish(GameEnded(_opposite_color(move.piece.color)))
+            return True
+        return False
+
+    def _capture_in_flight(self, move, capturing_move_id) -> bool:
+        """A piece is destroyed mid-transit by an opposite-color piece
+        that reaches their shared square later than it does. _mark_captured
+        (via _destroy_in_transit) already evicted this move from
+        pending_moves."""
+        return self._destroy_in_transit(move, capturing_move_id)
 
     def _truncate_move(self, move, path, collision_cell):
         """A piece is blocked by its own color: it stops one square short
@@ -287,8 +545,16 @@ class RealTimeArbiter:
             # rests rather than staying in State.moving toward its own
             # square. arrival_time was just reset to start_time above, so
             # the rest anchors there.
-            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
-            self.pending_moves.remove(move)
+            self._abort_move(move)
+            self._remove_move(move)
+            return
+        if self._scheduler_kind == SchedulerKind.EVENT_HEAP:
+            # Still travelling, but arrival_time just changed - the
+            # MOVE_DONE scheduled when this move was added is stale.
+            self._events.schedule(move.arrival_time, EventKind.MOVE_DONE, move.move_id, move)
+        self._publish(MoveTruncated(
+            move.move_id, move.piece.id, move.target, move.arrival_time, in_flight=True,
+        ))
 
     # ------------------------------------------------------------------
     # Arrival handling
@@ -318,42 +584,44 @@ class RealTimeArbiter:
         moves.sort(key=lambda m: m.arrival_time)
         winner = moves[0]
         losers = moves[1:]
+        king_captured = False
         for m in losers:
             if m.piece.color == winner.piece.color:
                 # Same-color pieces can't capture one another - it simply
                 # never lands on the contested square, same as a blocked
                 # move elsewhere.
-                self._begin_rest(m.piece, State.long_rest, m.arrival_time)
+                self._abort_move(m)
                 continue
-            m.piece.state = State.captured
-            if self.board.get_piece_at(m.origin) == m.piece:
-                self.board.set_piece_at(m.origin, EMPTY_CELL)
+            king_captured = self._destroy_in_transit(m, winner.move_id) or king_captured
         # The winner still needs to be validated - e.g. it could turn out
         # to be a friendly-fire "capture" on the target square, or its path
         # could have become illegal in the meantime. _resolve_single already
         # does this check for the single-mover case; do it here too.
         if not self._is_still_valid(winner):
-            self._begin_rest(winner.piece, State.long_rest, winner.arrival_time)
-            return False
-        return self._apply_move(winner)
+            self._abort_move(winner)
+            return king_captured
+        return self._apply_move(winner) or king_captured
 
     def _resolve_single(self, move):
 
         if move.origin != move.target and not self._is_still_valid(move):
             # The move never happened - don't leave the piece stuck
             # thinking it's still mid-move.
-            self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+            self._abort_move(move)
             return False
         return self._apply_move(move)
 
     def _is_still_valid(self, move):
         if move.piece.state == State.captured:
             return False
-        #check if path still clear
-        if not validate_move(self.board, move.origin, move.target).is_valid:
+        # Check if the move is still legal. move.origin may currently be
+        # empty (the piece vacates it mid-flight - see
+        # _vacate_departed_origins), so this is keyed off the piece itself
+        # rather than a board scan of its origin cell.
+        if not validate_piece_move(self.board, move.piece, move.target).is_valid:
             return False
         target_piece = self.board.get_piece_at(move.target)
-        if target_piece != EMPTY_CELL and target_piece.color == move.piece.color:
+        if target_piece is not None and target_piece.color == move.piece.color:
             return False
         return True
 
@@ -361,11 +629,25 @@ class RealTimeArbiter:
         if move.origin == move.target:
             # A jump landing - the piece never left its square.
             self._begin_rest(move.piece, State.short_rest, move.arrival_time)
+            self._publish(MoveCompleted(
+                move.move_id, move.piece.id, move.piece.type, move.piece.color,
+                move.origin, move.target,
+            ))
             return False
 
         target_piece = self.board.get_piece_at(move.target)
-        is_game_over = target_piece != EMPTY_CELL and target_piece.type == PieceType.KING
-        self.board.move_piece(move.origin, move.target)
+        is_game_over = target_piece is not None and target_piece.type == PieceType.KING
+        if target_piece is not None:
+            self._mark_captured(target_piece, move.move_id)
+        if self.board.get_piece_at(move.origin) == move.piece:
+            self.board.set_piece_at(move.origin, None)
+        self._place_piece(move.target, move.piece)
         self._begin_rest(move.piece, State.long_rest, move.arrival_time)
+        self._publish(MoveCompleted(
+            move.move_id, move.piece.id, move.piece.type, move.piece.color,
+            move.origin, move.target,
+        ))
+        if is_game_over:
+            self._publish(GameEnded(_opposite_color(target_piece.color)))
         return is_game_over
 

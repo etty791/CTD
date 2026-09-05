@@ -1,0 +1,43 @@
+{
+  "games": 200,
+  "simulated_ms": 90000,
+  "total_frames": 31596,
+  "frames_per_second_per_game": 1.7553333333333334,
+  "bytes_per_frame_p50": 118.0,
+  "bytes_per_frame_p99": 178.0,
+  "bytes_per_frame_mean": 124.28380174705659,
+  "bytes_per_second_per_game": 218.1595,
+  "events_per_frame_mean": 1.6134637295860235,
+  "tracemalloc_bytes_per_live_game": 40274.08,
+  "metrics": {
+    "counters": {
+      "arbiter_events_total": {
+        "MoveStarted": 16092.0,
+        "MoveCompleted": 15949.0,
+        "RestEnded": 15439.0,
+        "MoveAborted": 40.0,
+        "PieceCaptured": 1764.0,
+        "MoveTruncated": 27.0,
+        "GameEnded": 73.0
+      },
+      "arbiter_moves_total": {
+        "total": 16092.0
+      },
+      "game_state_events_total": {
+        "MoveStarted": 16092.0,
+        "MoveCompleted": 15949.0,
+        "RestEnded": 15439.0,
+        "MoveAborted": 40.0,
+        "PieceCaptured": 1764.0,
+        "MoveTruncated": 27.0,
+        "GameEnded": 73.0
+      },
+      "game_frames_total": {}
+    },
+    "histograms": {
+      "drain_loop_lag_seconds": {},
+      "game_frame_bytes": {},
+      "game_events_per_frame": {}
+    }
+  }
+}

@@ -4,7 +4,7 @@ from model.piece import Piece
 from model.position import Position
 from rules.piece_rules import RookRules, BishopRules, QueenRules, KnightRules, KingRules, PawnRules
 
-EMPTY = "."
+EMPTY = None
 
 
 def empty_board(rows=8, cols=8):

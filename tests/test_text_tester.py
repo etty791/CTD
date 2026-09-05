@@ -8,12 +8,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.piece import Piece, Color, PieceType
 from model.position import Position
-from model.board import Board, EMPTY_CELL
+from model.board import Board
 from textTester.parser import (
     parse_input, is_valid_board, create_board,
     create_commands, create_piece_from_string
 )
-from textTester.printer import print_board
+from textTester.printer import print_board, print_score
 
 VALID_TOKENS = {
     '.', 'wK', 'wQ', 'wR', 'wB', 'wN', 'wP',
@@ -35,7 +35,7 @@ def stdin_with(text):
 
 class TestCreatePieceFromString:
     def test_empty_cell_returns_empty(self):
-        assert create_piece_from_string('.', 0, 0, 1) == EMPTY_CELL
+        assert create_piece_from_string('.', 0, 0, 1) is None
 
     def test_white_king(self):
         p = create_piece_from_string('wK', 0, 0, 1)
@@ -107,13 +107,13 @@ class TestCreateBoard:
     def test_empty_cells_are_dot(self):
         lines = make_board_lines(['. .'])
         board = create_board(lines, VALID_TOKENS)
-        assert board[0][0] == EMPTY_CELL and board[0][1] == EMPTY_CELL
+        assert board[0][0] is None and board[0][1] is None
 
     def test_mixed_row(self):
         lines = make_board_lines(['wK . bK'])
         board = create_board(lines, VALID_TOKENS)
         assert board[0][0].type == PieceType.KING
-        assert board[0][1] == EMPTY_CELL
+        assert board[0][1] is None
         assert board[0][2].type == PieceType.KING
 
     def test_invalid_board_exits(self):
@@ -138,6 +138,10 @@ class TestCreateCommands:
     def test_print_board_command(self):
         cmds = create_commands(["print board"])
         assert cmds == [("print",)]
+
+    def test_print_score_command(self):
+        cmds = create_commands(["print score"])
+        assert cmds == [("print_score",)]
 
     def test_multiple_commands(self):
         cmds = create_commands(["click 0 0", "wait 100", "print board"])
@@ -240,6 +244,18 @@ class TestPrintBoard:
         print_board(board)
         line = capsys.readouterr().out.strip()
         assert ' ' in line
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# printer.py – print_score
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPrintScore:
+    def test_prints_both_colors(self, capsys):
+        print_score({Color.WHITE: 3, Color.BLACK: 0})
+        out = capsys.readouterr().out
+        assert "White: 3" in out
+        assert "Black: 0" in out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
