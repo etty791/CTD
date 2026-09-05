@@ -1,9 +1,9 @@
 """
 End-to-end tests for KungFu Chess.
 
-Coordinate system (from controller.py + board_mapper.py)
-----------------------------------------------------------
-  controller.handle_click(x, y)
+Coordinate system (from controller.py)
+---------------------------------------
+  handle_click(game, x, y)
       col = x // 100
       row = y // 100
   So:  click <col_pixels> <row_pixels>
@@ -20,21 +20,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from input.controller import Controller
-from input.board_mapper import BoardMapper
+import input.controller as controller_module
 from textTester.script_runner import run_script
-
-# view_config.DEFAULT_BOARD_SIZE is 8, so an 800x800 mapper reduces
-# pixels_to_logic(x, y) to (row, col) = (y // 100, x // 100), matching the
-# coordinate system this test suite is written against.
-BOARD_PIXEL_SIZE = 800
 
 
 def run(script: str, capsys=None):
-    """Run a text script through a fresh Controller, return stdout."""
-    board_mapper = BoardMapper(BOARD_PIXEL_SIZE, BOARD_PIXEL_SIZE)
-    with patch("sys.stdin", StringIO(script)), \
-         patch("textTester.script_runner.Controller", lambda game: Controller(game, board_mapper)):
+    """Reset controller state, run a text script, return stdout."""
+    controller_module.selected_piece_pos = None
+    with patch("sys.stdin", StringIO(script)):
         run_script()
     if capsys:
         return capsys.readouterr().out

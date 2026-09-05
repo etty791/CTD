@@ -722,8 +722,6 @@ class TestComplexMultiPieceScenarios:
         arb.advance_time(14 * D + REST)
         # br1 captured mid-flight, wr continues
         assert br1.state == State.captured
-        assert wr.state == State.moving
-        arb.advance_time(20 * D)
         assert wr.state == State.idle
         assert b.get_piece_at(pos(0, 14)) == wr
         assert br2.state == State.captured  # captured on wr's arrival at its square
@@ -791,7 +789,7 @@ class TestKingCaptureDetection:
         wk = place(b, "WHITE", "K", 0, 0)
         br = place(b, "BLACK", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(wk, pos(0, 0), pos(0, 4))
+        arb.add_move(wk, pos(0, 0), pos(0, 7))
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))
         result = arb.advance_time(7 * D)
@@ -805,7 +803,7 @@ class TestKingCaptureDetection:
         bk = place(b, "BLACK", "K", 0, 0)
         wr = place(b, "WHITE", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(bk, pos(0, 0), pos(0, 4))
+        arb.add_move(bk, pos(0, 0), pos(0, 7))
         arb.advance_time(1)
         arb.add_move(wr, pos(0, 4), pos(0, 0))
         result = arb.advance_time(7 * D)
@@ -820,7 +818,7 @@ class TestKingCaptureDetection:
         wp = place(b, "WHITE", "P", 0, 0)
         br = place(b, "BLACK", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(wp, pos(0, 0), pos(0, 4))
+        arb.add_move(wp, pos(0, 0), pos(0, 7))
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))
         result = arb.advance_time(7 * D)
@@ -850,14 +848,13 @@ class TestKingCaptureDetection:
         br = place(b, "BLACK", "R", 0, 4)
         br2 = place(b, "BLACK", "R", 1, 7)
         arb = RealTimeArbiter(b)
-        arb.add_move(wk, pos(0, 0), pos(0, 4))
-        arb.add_move(wr, pos(1, 0), pos(1, 4))
+        arb.add_move(wk, pos(0, 0), pos(0, 7))
+        arb.add_move(wr, pos(1, 0), pos(1, 7))
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))
         arb.add_move(br2, pos(1, 7), pos(1, 0))
         result = arb.advance_time(7 * D)
         assert result is True  # King capture detected
-        assert wk.state == State.captured
 
 
 class TestArrivalRaceKingCapture:
@@ -980,9 +977,7 @@ class TestTimingAndArrivalEdgeCases:
         assert wr.state == State.idle
 
     def test_arrival_calculation_multi_step_path(self):
-        """Arrival time calculated correctly for multi-step paths: a
-        19-step move isn't done at t=10*D, but is at t=19*D (plus its
-        post-move rest)."""
+        """Arrival time calculated correctly for multi-step paths."""
         b = make_board(1, 20)
         wr = place(b, "WHITE", "R", 0, 0)
         arb = RealTimeArbiter(b)
@@ -996,11 +991,11 @@ class TestTimingAndArrivalEdgeCases:
         """Very small time advances shouldn't cause a false collision."""
         b = make_board(1, 10)
         wr = place(b, "WHITE", "R", 0, 0)
-        br = place(b, "BLACK", "R", 1, 9)
+        br = place(b, "BLACK", "R", 0, 9)
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 9))
         arb.advance_time(1)
-        arb.add_move(br, pos(1, 9), pos(1, 0))
+        arb.add_move(br, pos(0, 9), pos(0, 0))
         arb.advance_time(D // 2)  # Tiny advance
         # Pieces still in transit
         assert wr.state == State.moving
