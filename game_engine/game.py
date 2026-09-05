@@ -26,8 +26,6 @@ class KungFuChessGame:
         self.events.publish(GameStarted())
 
     def move_request(self, origin, target):
-        # if origin == target:
-        #     return False
         if not self.game_active:
             return MoveValidation(False, reason=MoveReason.GAME_OVER)
         is_valid_move = validate_move(self.board, origin, target)

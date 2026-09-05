@@ -166,13 +166,6 @@ class RealTimeArbiter:
         if piece.state != State.idle:
             return False
 
-        # Reject moves that are illegal per the rules engine up front.
-        # Without this, an illegal move would sit in pending_moves with the
-        # piece locked in State.moving until it finally got rejected at
-        # arrival time, needlessly freezing the piece in the meantime.
-        # if not validate_move(self.board, origin, target).is_valid:
-        #     return False
-
         distance = _move_distance(origin, target)
         arrival_time = self.clock + (distance * DEFAULT_MOVE_DELAY_MS)
         move = Move(piece, origin, target, arrival_time, self.clock, self._new_move_id())

@@ -56,7 +56,4 @@ def validate_move(
             return MoveValidation(False, MoveReason.EMPTY_SOURCE)
         piece = board.get_piece_at(source)
 
-        # if board.is_friendly(destination, piece.color):
-        #     return MoveValidation(False, "friendly_destination")
-
         return validate_piece_move(board, piece, destination)

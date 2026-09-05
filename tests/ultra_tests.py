@@ -342,50 +342,6 @@ TEST_CASES = [
         ["click 150 150", "click 150 50", "wait 1000", "click 150 50", "click 250 150", "wait 1000", "print board"],
         ". . .\n. . wQ\n. . ."
     ),
-
-    # --- Jump Mechanics (Airborne) ---
-    # pytest.param(
-    #     "jump_lands_same_square",
-    #     ". . .\n. wK .\n. . .",
-    #     ["jump 150 150", "wait 1000", "print board"],
-    #     ". . .\n. wK .\n. . .",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # ),
-    # pytest.param(
-    #     "airborne_piece_captures_arriving_enemy",
-    #     ". . .\nwK bR .\n. . .",
-    #     ["jump 50 150", "click 150 150", "click 50 150", "wait 1000", "print board"],
-    #     ". . .\nwK . .\n. . .",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # ),
-    # pytest.param(
-    #     "jump_too_late_does_not_save_piece",
-    #     ". . .\nwK bR .\n. . .",
-    #     ["click 150 150", "click 50 150", "wait 1000", "jump 50 150", "print board"],
-    #     ". . .\nbR . .\n. . .",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # ),
-    # pytest.param(
-    #     "enemy_arrives_after_landing_captures_normally",
-    #     ". . . .\nwK . . bR\n. . . .",
-    #     ["jump 50 150", "wait 1000", "click 350 150", "click 50 150", "wait 3000", "print board"],
-    #     ". . . .\nbR . . .\n. . . .",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # ),
-    # pytest.param(
-    #     "cannot_jump_while_moving",
-    #     "wR . .",
-    #     ["click 50 50", "click 250 50", "wait 500", "jump 50 50", "wait 1500", "print board"],
-    #     ". . wR",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # ),
-    # pytest.param(
-    #     "airborne_capture_only_enemy",
-    #     ". . .\nwK wR .\n. . .",
-    #     ["jump 50 150", "click 150 150", "click 50 150", "wait 1000", "print board"],
-    #     ". . .\nwK wR .\n. . .",
-    #     marks=pytest.mark.skip(reason="jump not implemented")
-    # )
 ]
 
 @pytest.mark.parametrize("case_name, board, commands, expected_output", TEST_CASES)
