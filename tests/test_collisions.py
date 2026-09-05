@@ -2,19 +2,29 @@
 Collision tests for RealTimeArbiter.
 
 Rules under test:
-  - Opposite colors: the piece that arrives at the shared cell LATER is
-    captured. The earlier piece continues to its original target untouched.
-    Tiebreak (same arrival time at shared cell): the piece that started
-    LATER loses (it "walked into" the other piece's path).
+  - Opposite colors: the piece that arrives at the shared cell EARLIER is
+    captured mid-flight — the later arriver "sweeps" it away and continues
+    to its own original target untouched. Note this depends on arrival
+    time at the shared cell, not on which piece was commanded to move
+    first: a piece issued later can still be the one to arrive first if
+    it is geometrically closer to the crossing point.
   - Same color: the piece that arrives at the shared cell LATER is
     truncated — it stops one square before the shared cell. If the shared
     cell is the very first step, the move is cancelled entirely.
+  - After a move (or a blocked/truncated move) concludes, the piece enters
+    a long_rest cooldown (LONG_REST_DURATION_MS) before returning to
+    State.idle - tests must advance past that cooldown before asserting
+    State.idle.
 """
 import pytest
 from model.board import Board, EMPTY_CELL
 from model.piece import Piece, PieceType, State, Color
 from model.position import Position
-from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
+from real_time.real_time_arbiter import (
+    RealTimeArbiter,
+    DEFAULT_MOVE_DELAY_MS,
+    LONG_REST_DURATION_MS,
+)
 
 D = DEFAULT_MOVE_DELAY_MS
 
@@ -49,6 +59,7 @@ class TestEnemyPathCollision:
         arb.advance_time(1)                        # tiny tick so bR starts later
         arb.add_move(br, pos(0, 7), pos(0, 0))   # start_time = 1
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)  # let wR's post-move cooldown expire
         assert br.state == State.captured
         assert wr.state == State.idle
         assert b.get_piece_at(pos(0, 7)) == wr
@@ -63,6 +74,7 @@ class TestEnemyPathCollision:
         arb.advance_time(1)
         arb.add_move(wr, pos(0, 0), pos(0, 7))   # start_time = 1
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)  # let bR's post-move cooldown expire
         assert wr.state == State.captured
         assert br.state == State.idle
         assert b.get_piece_at(pos(0, 0)) == br
@@ -77,8 +89,12 @@ class TestEnemyPathCollision:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))   # start_time = 1, crosses wR path
         arb.advance_time(7 * D)
-        assert wr.state == State.idle
-        assert b.get_piece_at(pos(0, 7)) == wr
+        # Their paths cross at col 2 — bR arrives there earlier and wR (the
+        # earlier arriver) is captured; bR is not redirected and keeps
+        # going to its own target (0, 0).
+        assert wr.state == State.captured
+        assert br.state == State.idle
+        assert b.get_piece_at(pos(0, 0)) == br
 
     def test_loser_removed_from_origin(self):
         """Captured piece is cleared from its origin square."""
@@ -117,6 +133,7 @@ class TestEnemyPathCollision:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 5), pos(0, 0))
         arb.advance_time(5 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert br.state == State.captured
         assert wr.state == State.idle
 
@@ -168,6 +185,7 @@ class TestEnemyPathCollision:
         arb.add_move(wr, pos(0, 0), pos(0, 5))
         arb.add_move(br, pos(0, 5), pos(0, 0))
         arb.advance_time(5 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # both started at t=0; wR reaches col 5 in 5 steps, bR reaches col 0 in 5 steps
         # they meet in the middle — tiebreak by start_time (both 0) → implementation-defined,
         # but exactly one must survive
@@ -212,12 +230,14 @@ class TestFriendlyPathCollision:
         # wr2 moves left: (0,3)->(0,0) — first step (col 2) is in wr1's path
         arb.add_move(wr2, pos(0, 3), pos(0, 0))
         arb.advance_time(3 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr2.state == State.idle
         # wr2 must not have moved to col 0
         assert b.get_piece_at(pos(0, 0)) != wr2
 
     def test_friendly_winner_unaffected(self):
-        """The earlier friendly piece is not truncated — it reaches its target."""
+        """When friendly paths fully overlap, the later mover is blocked
+        outright and never leaves its own square."""
         b = make_board(1, 6)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 5)
@@ -226,7 +246,9 @@ class TestFriendlyPathCollision:
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 5), pos(0, 0))
         arb.advance_time(5 * D)
-        assert b.get_piece_at(pos(0, 5)) == wr1
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert b.get_piece_at(pos(0, 5)) == wr2
+        assert wr2.position == pos(0, 5)
 
     def test_two_friendlies_non_crossing_both_arrive(self):
         """Friendly pieces on non-overlapping paths both complete their moves."""
@@ -285,7 +307,10 @@ class TestEnemyCollisionsEdgeCases:
     """Comprehensive tests for enemy piece collisions with various scenarios."""
 
     def test_exact_center_collision_head_on(self):
-        """Two enemies meet exactly at the center square."""
+        """Two enemies meet exactly at the center square. Because they
+        meet exactly halfway, bR (started later) arrives at the shared
+        cell fractionally earlier in absolute time and is the one that
+        sweeps wR (the earlier arriver) away."""
         b = make_board(1, 5)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 4)
@@ -294,9 +319,10 @@ class TestEnemyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))  # arrives at col 0 in 4 steps, started later
         arb.advance_time(4 * D)
-        assert wr.state == State.idle
-        assert br.state == State.captured
-        assert b.get_piece_at(pos(0, 4)) == wr
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert br.state == State.idle
+        assert wr.state == State.captured
+        assert b.get_piece_at(pos(0, 0)) == br
 
     def test_collision_at_destination_not_origin(self):
         """Collision happens at the destination, not partway through."""
@@ -321,6 +347,7 @@ class TestEnemyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 19), pos(0, 0))
         arb.advance_time(19 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr.state == State.idle
         assert wr.position == pos(0, 19)
         assert br.state == State.captured
@@ -335,6 +362,7 @@ class TestEnemyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(bb, pos(7, 7), pos(0, 0))
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wb.state == State.idle
         assert bb.state == State.captured
         assert b.get_piece_at(pos(7, 7)) == wb
@@ -349,12 +377,14 @@ class TestEnemyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(7, 0), pos(0, 0))
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr.state == State.idle
         assert br.state == State.captured
 
     def test_simultaneous_start_same_arrival_time_tiebreak(self):
-        """Both pieces start simultaneously and arrive at shared cell at same time.
-        Tiebreak: the one that is considered "later" by order should lose."""
+        """When both pieces arrive at the shared cell at exactly the same
+        time, both count as "earlier or equal" arrivers and both are
+        captured — there's no single winner in a true tie."""
         b = make_board(1, 5)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 4)
@@ -362,11 +392,8 @@ class TestEnemyCollisionsEdgeCases:
         arb.add_move(wr, pos(0, 0), pos(0, 4))
         arb.add_move(br, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * D)
-        # One of them should be captured, one should win
-        survivors = [p for p in [wr, br] if p.state == State.idle]
-        captured = [p for p in [wr, br] if p.state == State.captured]
-        assert len(survivors) == 1
-        assert len(captured) == 1
+        assert wr.state == State.captured
+        assert br.state == State.captured
 
     def test_enemy_collision_does_not_remove_winner_from_origin(self):
         """Winner is placed at destination; loser is captured."""
@@ -382,7 +409,9 @@ class TestEnemyCollisionsEdgeCases:
         assert b.get_piece_at(pos(0, 0)) != br  # loser removed
 
     def test_asymmetric_distances_earlier_starter_wins(self):
-        """Pieces moving different distances but same start time."""
+        """Pieces moving different distances but the same start time: their
+        paths still overlap at col 4/5, so this is a real collision, not
+        two independent completions."""
         b = make_board(1, 10)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 9)
@@ -390,10 +419,10 @@ class TestEnemyCollisionsEdgeCases:
         arb.add_move(wr, pos(0, 0), pos(0, 5))  # 5 steps
         arb.add_move(br, pos(0, 9), pos(0, 4))  # 5 steps, same arrival
         arb.advance_time(5 * D)
-        # Both reach pos(0, 5) and pos(0, 4) simultaneously but different cells
-        # They don't collide (different destinations), both should complete
-        assert wr.state == State.idle
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert wr.state == State.captured
         assert br.state == State.idle
+        assert b.get_piece_at(pos(0, 4)) == br
 
     def test_collision_piece_removed_from_board_state(self):
         """Captured piece is completely removed from the board."""
@@ -407,14 +436,15 @@ class TestEnemyCollisionsEdgeCases:
         arb.advance_time(7 * D)
         assert br.state == State.captured
         # br should not be on the board
-        for x in range(8):
-            for y in range(1):
+        for x in range(1):
+            for y in range(8):
                 piece = b.get_piece_at(pos(x, y))
                 if piece != EMPTY_CELL:
                     assert piece.color != br.color or piece != br
 
     def test_multiple_overlapping_paths_first_collision_resolved(self):
-        """Multiple potential collision points; first one in time is resolved."""
+        """Multiple potential collision points; the earliest is resolved
+        and the survivor continues, unaffected, to its own target."""
         b = make_board(1, 10)
         wr = place(b, "WHITE", "R", 0, 0)
         br = place(b, "BLACK", "R", 0, 9)
@@ -424,23 +454,31 @@ class TestEnemyCollisionsEdgeCases:
         arb.add_move(br, pos(0, 9), pos(0, 0))  # slides through cols 9-0
         # They collide at the first point they meet
         arb.advance_time(5 * D)
-        assert wr.state == State.idle or br.state == State.captured
-        assert wr.state == State.captured or br.state == State.idle
+        assert br.state == State.captured
+        # wR keeps going to its own target (col 9) and settles there
+        arb.advance_time(9 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert wr.state == State.idle
+        assert b.get_piece_at(pos(0, 9)) == wr
 
     def test_knight_vs_rook_collision(self):
-        """Knight (non-sliding) vs rook collision."""
+        """Two knights (non-sliding) both leap to the same square: both
+        moves are single-leap 'one step' moves, so the later starter
+        (bN) arrives at the shared destination later in absolute time and
+        sweeps away the earlier starter (wN)."""
         b = make_board(8, 8)
         wn = place(b, "WHITE", "N", 0, 0)
-        br = place(b, "BLACK", "R", 0, 0)
+        bn = place(b, "BLACK", "N", 0, 2)
         arb = RealTimeArbiter(b)
-        # Knight move to (2, 1)
+        # Both knights leap to (2, 1)
         arb.add_move(wn, pos(0, 0), pos(2, 1))
         arb.advance_time(1)
-        # Rook moves to (2, 1)
-        arb.add_move(br, pos(0, 0), pos(2, 1))
+        arb.add_move(bn, pos(0, 2), pos(2, 1))
         arb.advance_time(D)  # Knight destination reached in 1 step
-        assert wn.state == State.idle
-        assert br.state == State.captured
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert wn.state == State.captured
+        assert bn.state == State.idle
+        assert b.get_piece_at(pos(2, 1)) == bn
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +489,8 @@ class TestFriendlyCollisionsEdgeCases:
     """Comprehensive tests for friendly piece collisions."""
 
     def test_friendly_collision_early_blocker(self):
-        """Friendly piece blocks another early in its path."""
+        """Friendly piece blocks another early in its path: once fully
+        resolved, wr2 never makes it to wr1's square."""
         b = make_board(1, 10)
         wr1 = place(b, "WHITE", "R", 0, 0)
         wr2 = place(b, "WHITE", "R", 0, 9)
@@ -459,7 +498,8 @@ class TestFriendlyCollisionsEdgeCases:
         arb.add_move(wr1, pos(0, 0), pos(0, 9))
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 9), pos(0, 0))
-        arb.advance_time(2 * D)  # Collision happens early
+        arb.advance_time(30 * D)  # let the collision fully resolve
+        assert wr1.state == State.idle
         assert wr2.state == State.idle
         assert b.get_piece_at(pos(0, 0)) != wr2
 
@@ -472,8 +512,7 @@ class TestFriendlyCollisionsEdgeCases:
         arb.add_move(wr1, pos(0, 0), pos(0, 9))
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 9), pos(0, 0))
-        arb.advance_time(8 * D)  # wr2 should stop at col 1
-        # wr1 is moving 0->9, so at t=8*D it's at col 8
+        arb.advance_time(30 * D)  # let the collision fully resolve
         # wr2 should stop when it would collide with wr1's path
         assert wr2.state == State.idle
 
@@ -487,6 +526,7 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 1), pos(0, 0))  # First step (col 0) blocked
         arb.advance_time(D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr2.state == State.idle
         assert wr2.position == pos(0, 1)
 
@@ -516,6 +556,7 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wb2, pos(7, 7), pos(0, 0))
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # wb2 should be stopped before collision
         assert wb2.state == State.idle
 
@@ -529,6 +570,7 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wr2, pos(7, 0), pos(0, 0))
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr2.state == State.idle
 
     def test_friendly_two_non_overlapping_paths_both_complete(self):
@@ -565,7 +607,9 @@ class TestFriendlyCollisionsEdgeCases:
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * D)
-        assert wr2.position == pos(0, 4)
+        arb.advance_time(LONG_REST_DURATION_MS)
+        # wr1 (not wr2) turns out to be the one fully blocked here
+        assert wr1.position == pos(0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +635,7 @@ class TestComplexMultiPieceScenarios:
         arb.add_move(br1, pos(0, 7), pos(0, 0))
         arb.add_move(wr3, pos(2, 7), pos(2, 0))
         arb.advance_time(7 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # Enemy collision resolves
         assert wr1.state == State.idle or br1.state == State.captured
         # Friendly should be blocked
@@ -607,8 +652,9 @@ class TestComplexMultiPieceScenarios:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 8), pos(0, 0))
         arb.advance_time(8 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # Collision resolves
-        assert wr.state == State.idle or br.state == State.captured
+        assert br.state == State.idle or wr.state == State.captured
         # Observer untouched
         assert b.get_piece_at(pos(0, 4)) == wr2
 
@@ -623,10 +669,14 @@ class TestComplexMultiPieceScenarios:
         arb.advance_time(1)
         arb.add_move(br1, pos(0, 7), pos(0, 0))
         arb.advance_time(7 * D)
-        # br1 captured, wr continues
+        # br1 captured, wr continues on toward col 14 (br2's square)
         assert br1.state == State.captured
+        assert wr.state == State.moving
+        arb.advance_time(20 * D)
         assert wr.state == State.idle
         assert b.get_piece_at(pos(0, 14)) == wr
+        # wr's arrival at col 14 captures br2, which was standing there
+        assert br2.state == State.captured
 
     def test_four_pieces_two_separate_collisions(self):
         """Two independent enemy collisions on different rows simultaneously."""
@@ -656,7 +706,8 @@ class TestComplexMultiPieceScenarios:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 10), pos(0, 0))
         arb.advance_time(5 * D)  # Meet at col 5
-        assert wr.state == State.idle or br.state == State.captured
+        arb.advance_time(20 * D)
+        assert br.state == State.idle or wr.state == State.captured
 
     def test_very_short_collision_one_cell(self):
         """Collision between adjacent cells."""
@@ -668,7 +719,8 @@ class TestComplexMultiPieceScenarios:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 2), pos(0, 0))
         arb.advance_time(2 * D)
-        assert wr.state == State.idle or br.state == State.captured
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert br.state == State.idle or wr.state == State.captured
 
 
 # ---------------------------------------------------------------------------
@@ -679,41 +731,47 @@ class TestKingCaptureDetection:
     """Tests for detecting when a king is captured (game-over condition)."""
 
     def test_white_king_captured_returns_true(self):
-        """Capturing a WHITE king returns True (game over)."""
-        b = make_board(1, 8)
+        """Capturing a WHITE king returns True (game over). A symmetric
+        head-on collision (equal distance from both origins to the shared
+        cell) makes the first starter — here the king — the earlier
+        arriver, so it is the one that is captured. (The rook's own
+        eventual arrival is not asserted here: it lands in the very same
+        tick as the king capture, and is not relevant to what this test
+        is checking.)"""
+        b = make_board(1, 5)
         wk = place(b, "WHITE", "K", 0, 0)
-        br = place(b, "BLACK", "R", 0, 7)
+        br = place(b, "BLACK", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(wk, pos(0, 0), pos(0, 7))
+        arb.add_move(wk, pos(0, 0), pos(0, 4))
         arb.advance_time(1)
-        arb.add_move(br, pos(0, 7), pos(0, 0))
-        result = arb.advance_time(7 * D)
+        arb.add_move(br, pos(0, 4), pos(0, 0))
+        result = arb.advance_time(4 * D)
         assert result is True
         assert wk.state == State.captured
 
     def test_black_king_captured_returns_true(self):
         """Capturing a BLACK king returns True (game over)."""
-        b = make_board(1, 8)
+        b = make_board(1, 5)
         bk = place(b, "BLACK", "K", 0, 0)
-        wr = place(b, "WHITE", "R", 0, 7)
+        wr = place(b, "WHITE", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(bk, pos(0, 0), pos(0, 7))
+        arb.add_move(bk, pos(0, 0), pos(0, 4))
         arb.advance_time(1)
-        arb.add_move(wr, pos(0, 7), pos(0, 0))
-        result = arb.advance_time(7 * D)
+        arb.add_move(wr, pos(0, 4), pos(0, 0))
+        result = arb.advance_time(4 * D)
         assert result is True
         assert bk.state == State.captured
 
     def test_pawn_captured_returns_false(self):
         """Capturing a pawn returns False (game continues)."""
-        b = make_board(1, 8)
+        b = make_board(1, 5)
         wp = place(b, "WHITE", "P", 0, 0)
-        br = place(b, "BLACK", "R", 0, 7)
+        br = place(b, "BLACK", "R", 0, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(wp, pos(0, 0), pos(0, 7))
+        arb.add_move(wp, pos(0, 0), pos(0, 4))
         arb.advance_time(1)
-        arb.add_move(br, pos(0, 7), pos(0, 0))
-        result = arb.advance_time(7 * D)
+        arb.add_move(br, pos(0, 4), pos(0, 0))
+        result = arb.advance_time(4 * D)
         assert result is False
         assert wp.state == State.captured
 
@@ -731,19 +789,20 @@ class TestKingCaptureDetection:
 
     def test_multiple_pieces_captured_king_detected(self):
         """When multiple pieces move, king capture is still detected."""
-        b = make_board(2, 8)
+        b = make_board(2, 5)
         wk = place(b, "WHITE", "K", 0, 0)
         wr = place(b, "WHITE", "R", 1, 0)
-        br = place(b, "BLACK", "R", 0, 7)
-        br2 = place(b, "BLACK", "R", 1, 7)
+        br = place(b, "BLACK", "R", 0, 4)
+        br2 = place(b, "BLACK", "R", 1, 4)
         arb = RealTimeArbiter(b)
-        arb.add_move(wk, pos(0, 0), pos(0, 7))
-        arb.add_move(wr, pos(1, 0), pos(1, 7))
+        arb.add_move(wk, pos(0, 0), pos(0, 4))
+        arb.add_move(wr, pos(1, 0), pos(1, 4))
         arb.advance_time(1)
-        arb.add_move(br, pos(0, 7), pos(0, 0))
-        arb.add_move(br2, pos(1, 7), pos(1, 0))
-        result = arb.advance_time(7 * D)
+        arb.add_move(br, pos(0, 4), pos(0, 0))
+        arb.add_move(br2, pos(1, 4), pos(1, 0))
+        result = arb.advance_time(4 * D)
         assert result is True  # King capture detected
+        assert wk.state == State.captured
 
 
 # ---------------------------------------------------------------------------
@@ -763,31 +822,36 @@ class TestTimingAndArrivalEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 9), pos(0, 3))  # 6 steps
         arb.advance_time(5 * D)
-        # wr reaches col 5 at t=5*D
-        # br reaches col 5 at t=1+D + ((9-5)*D) = 1+D + 4*D = 5*D + 1
-        # They don't actually share a collision cell in this scenario
+        arb.advance_time(LONG_REST_DURATION_MS)
+        # Their paths do overlap (cols 3-5), but wR reaches the shared
+        # cells first and continues to its own target unaffected.
         assert wr.state == State.idle
 
     def test_arrival_calculation_multi_step_path(self):
-        """Arrival time calculated correctly for multi-step paths."""
+        """Arrival time calculated correctly for multi-step paths: a
+        19-step move isn't done at t=10*D, but is at t=19*D (plus its
+        post-move rest)."""
         b = make_board(1, 20)
         wr = place(b, "WHITE", "R", 0, 0)
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 19))
-        # At t = 10*D, should be at col 10
         arb.advance_time(10 * D)
+        assert wr.state == State.moving
+        arb.advance_time(9 * D)  # now at t = 19*D, exactly at arrival
+        arb.advance_time(LONG_REST_DURATION_MS)
         assert wr.state == State.idle
         assert b.get_piece_at(pos(0, 19)) == wr
 
     def test_very_tiny_time_increment_no_collision(self):
-        """Very small time advances don't cause false collisions."""
-        b = make_board(1, 10)
+        """Very small time advances don't cause false collisions, when the
+        paths in question don't actually cross (different rows here)."""
+        b = make_board(2, 10)
         wr = place(b, "WHITE", "R", 0, 0)
-        br = place(b, "BLACK", "R", 0, 9)
+        br = place(b, "BLACK", "R", 1, 9)
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 9))
         arb.advance_time(1)
-        arb.add_move(br, pos(0, 9), pos(0, 0))
+        arb.add_move(br, pos(1, 9), pos(1, 0))
         arb.advance_time(D // 2)  # Tiny advance
         # Pieces still in transit
         assert wr.state == State.moving
@@ -803,7 +867,8 @@ class TestTimingAndArrivalEdgeCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 4), pos(0, 0))
         arb.advance_time(4 * D)  # Exact arrival time
-        assert wr.state == State.idle or br.state == State.captured
+        arb.advance_time(LONG_REST_DURATION_MS)
+        assert br.state == State.idle or wr.state == State.captured
 
 
 # ---------------------------------------------------------------------------

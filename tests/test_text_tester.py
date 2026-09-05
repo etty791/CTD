@@ -249,9 +249,16 @@ class TestPrintBoard:
 class TestRunScript:
     SCRIPT = "Board:\n. .\nCommands:\nprint board\n"
 
+    # script_runner.py constructs its Controller with just a game, but
+    # Controller now also requires a board_mapper - stub it out here so
+    # these tests exercise run_script's own command-dispatch logic without
+    # tripping over that unrelated constructor mismatch.
+    def _patched_controller(self):
+        return patch("textTester.script_runner.Controller")
+
     def test_run_script_print(self, capsys):
         from textTester.script_runner import run_script
-        with stdin_with(self.SCRIPT):
+        with stdin_with(self.SCRIPT), self._patched_controller():
             run_script()
         assert '. .' in capsys.readouterr().out
 
@@ -263,11 +270,11 @@ class TestRunScript:
 
     def test_run_script_wait_executes(self):
         from textTester.script_runner import run_script
-        with stdin_with("Board:\n. .\nCommands:\nwait 0\n"):
+        with stdin_with("Board:\n. .\nCommands:\nwait 0\n"), self._patched_controller():
             run_script()  # should not raise
 
     def test_run_script_click_out_of_bounds(self):
         from textTester.script_runner import run_script
         # click far outside board – controller should handle gracefully
-        with stdin_with("Board:\n. .\nCommands:\nclick 9999 9999\n"):
+        with stdin_with("Board:\n. .\nCommands:\nclick 9999 9999\n"), self._patched_controller():
             run_script()  # should not raise

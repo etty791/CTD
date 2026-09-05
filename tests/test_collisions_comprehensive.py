@@ -12,7 +12,11 @@ import pytest
 from model.board import Board, EMPTY_CELL
 from model.piece import Piece, PieceType, State, Color
 from model.position import Position
-from real_time.real_time_arbiter import RealTimeArbiter, DEFAULT_MOVE_DELAY_MS
+from real_time.real_time_arbiter import (
+    RealTimeArbiter,
+    DEFAULT_MOVE_DELAY_MS,
+    LONG_REST_DURATION_MS,
+)
 
 D = DEFAULT_MOVE_DELAY_MS
 
@@ -62,6 +66,7 @@ class TestEnemyCollisionsComprehensive:
         arb.add_move(wr, pos(0, 0), pos(0, 5))
         arb.add_move(br, pos(1, 5), pos(1, 0))
         arb.advance_time(5 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # Different rows, no collision
         assert wr.state == State.idle
         assert br.state == State.idle
@@ -89,6 +94,7 @@ class TestEnemyCollisionsComprehensive:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 11), pos(0, 5))  # 6 steps, arrives at t=1+6*D
         arb.advance_time(6 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # They don't share same destination
         assert wr.state == State.idle or br.state == State.idle
 
@@ -125,6 +131,7 @@ class TestFriendlyCollisionsComprehensive:
         arb.advance_time(1)
         arb.add_move(wr2, pos(0, 9), pos(0, 0))
         arb.advance_time(9 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # wr2 should be blocked (not reach (0,0))
         assert wr2.state == State.idle
 
@@ -322,6 +329,7 @@ class TestTimingAndArrivalCases:
         arb = RealTimeArbiter(b)
         arb.add_move(wr, pos(0, 0), pos(0, 9))
         arb.advance_time(9 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # Completed
         assert wr.state == State.idle
 
@@ -335,6 +343,7 @@ class TestTimingAndArrivalCases:
         arb.advance_time(1)
         arb.add_move(br, pos(0, 2), pos(0, 0))
         arb.advance_time(2 * D)
+        arb.advance_time(LONG_REST_DURATION_MS)
         # Collision should occur
         survivors = sum(1 for p in [wr, br] if p.state == State.idle)
         captured = sum(1 for p in [wr, br] if p.state == State.captured)
